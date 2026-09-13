@@ -1,22 +1,30 @@
-"""Dockerfile generation: a Claude Code prompt tailored to producing a
-complete Dockerfile, extraction of that content from the run's reply, a
-deterministic lint check, and deterministic policy checks - before anything
-is proposed for approval.
+"""Dockerfile generation: a narrow Claude Code prompt for the one part that
+genuinely varies per repo, deterministic templating for everything that
+doesn't, a deterministic lint check, and deterministic policy checks -
+before anything is proposed for approval.
 
-Generation itself is genuinely a latent-space task (writing a correct
-Dockerfile for an arbitrary repo requires understanding its language,
-dependencies, and entry point) - it goes through the local Claude Code
-runner like every other LLM call in this project, never a direct API call.
-Linting and policy-checking the result are deterministic I/O/pattern
-matching: the same Dockerfile content always produces the same findings,
-so neither needs an LLM call.
+Two fixes landed here, each removing model discretion one level further
+after live sampling showed it varying:
 
-Base image selection is NOT part of what the model decides (see
-base_images.py) - a sample of 6 independent generations against the same
-repo showed the model re-deriving the base image and privilege-drop
-strategy differently each run, including one architecturally unsafe choice
-that still passed lint. build_dockerfile_system_prompt() takes the
-operator-configured base image as a hard constraint instead.
+1. Base image (and privilege-drop strategy) became config, not a
+   generation decision - see base_images.py. A 6-run sample had shown the
+   model re-deriving the container's security architecture every run,
+   including one unsafe choice that still passed lint.
+2. CMD and HEALTHCHECK are ALSO properties of the base image and how it's
+   meant to run, not the repo - a follow-up 4-run sample (base image now
+   fixed) showed them regressing anyway: 1/4 correct CMD, 1/4 correct
+   HEALTHCHECK, no run with both, though the verifier caught and annotated
+   every case correctly. render_dockerfile() now templates FROM/CMD/
+   HEALTHCHECK/EXPOSE deterministically from AppImagePolicy; the model's
+   job narrows to what actually varies per repo - which files to COPY,
+   where, and the --chown form.
+
+Determining the COPY instructions is still genuinely latent-space (reading
+an arbitrary repo's file layout to decide what belongs in the image) - it
+goes through the local Claude Code runner like every other LLM call in
+this project. Templating, linting, and policy-checking the result are all
+deterministic: the same inputs always produce the same output/findings, so
+none of them need an LLM call.
 """
 
 import re
@@ -25,47 +33,65 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .base_images import AppImagePolicy
 
-def build_dockerfile_system_prompt(base_image: str) -> str:
+
+def build_copy_instructions_prompt(policy: AppImagePolicy) -> str:
     return (
-        "You are a DevOps agent generating a Dockerfile for a repository. "
-        "Investigate the repository's dependencies and entry point using "
-        "only the read-only MCP tools available to you. Do not attempt to "
-        "modify any external system - you have no write access.\n\n"
-        f"You MUST use exactly this base image, already selected by "
-        f"operator policy: {base_image}. Do not choose, suggest, or "
-        f"substitute a different base image or tag under any "
-        f"circumstances, even if you believe another choice would be "
-        f"better - base image selection is a security decision made once "
-        f"by the operator, not something to re-derive per run.\n\n"
-        "Follow Docker best practices for everything else: minimize the "
-        "number of layers, keep the final image small, and use a "
-        "multi-stage build only if it meaningfully helps without changing "
-        "the base image already specified above.\n\n"
-        "End your reply with the complete Dockerfile content in a single "
-        "fenced code block labeled dockerfile, and nothing else after it:\n"
-        "```dockerfile\n"
+        "You are a DevOps agent determining how to get a repository's "
+        "files into a Docker image. The Dockerfile's base image, CMD, "
+        "HEALTHCHECK, and EXPOSE are already fixed by operator policy - "
+        f"do not produce or repeat them. The image is {policy.image}.\n\n"
+        "Investigate the repository using only the read-only MCP tools "
+        "available to you. Determine exactly which files or directories "
+        "need to be copied into the image, the correct destination path "
+        "for this base image, and an appropriate --chown form so the "
+        "process (running as a non-root user in this image) can read "
+        "them.\n\n"
+        "End your reply with only the Dockerfile COPY instruction(s) "
+        "needed - one or more lines, nothing else - in a single fenced "
+        "code block labeled dockerfile-copy:\n"
+        "```dockerfile-copy\n"
         "...\n"
         "```\n"
-        "Every line must be complete and correct as written - no placeholder "
-        "comments, no TODOs, no options left for someone else to fill in."
+        "Do not include FROM, CMD, HEALTHCHECK, EXPOSE, or any other "
+        "instruction - only COPY. Every line must be complete and correct "
+        "as written - no placeholders."
     )
 
 
-_FENCED_DOCKERFILE_BLOCK = re.compile(r"```dockerfile\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_FENCED_COPY_BLOCK = re.compile(r"```dockerfile-copy\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_COPY_LINE = re.compile(r"^\s*COPY\s", re.MULTILINE | re.IGNORECASE)
 
 
-def extract_dockerfile(result_text: str) -> str | None:
-    """Pulls the Dockerfile content out of a ```dockerfile fenced block, as
-    required by build_dockerfile_system_prompt(). Returns None if no such
-    block is present - deliberately does not fall back to a generic,
-    unlabeled fenced block, since that risks grabbing an unrelated code
-    snippet the model included while investigating (e.g. a command it
-    ran)."""
-    match = _FENCED_DOCKERFILE_BLOCK.search(result_text)
+def extract_copy_instructions(result_text: str) -> str | None:
+    """Pulls the COPY instruction(s) out of a ```dockerfile-copy fenced
+    block, as required by build_copy_instructions_prompt(). Returns None if
+    no such block is present, or if it's present but contains no line that
+    actually looks like a COPY instruction - either way the model didn't
+    follow instructions and the caller should refuse rather than guess."""
+    match = _FENCED_COPY_BLOCK.search(result_text)
     if match is None:
         return None
-    return match.group(1).strip("\n")
+    content = match.group(1).strip("\n")
+    if not _COPY_LINE.search(content):
+        return None
+    return content
+
+
+def render_dockerfile(policy: AppImagePolicy, copy_instructions: str) -> str:
+    """Deterministically assembles the final Dockerfile from the
+    operator-configured policy (FROM/EXPOSE/HEALTHCHECK/CMD - fixed, never
+    model-generated) and the model-generated COPY instruction(s), the only
+    part that legitimately varies per repo. Templating, not generation -
+    the same policy and copy_instructions always produce the same output."""
+    return (
+        f"FROM {policy.image}\n"
+        f"{copy_instructions.strip()}\n"
+        f"EXPOSE {policy.port}\n"
+        f"HEALTHCHECK {policy.healthcheck}\n"
+        f"CMD {policy.cmd}\n"
+    )
 
 
 @dataclass(frozen=True)
@@ -140,9 +166,13 @@ def lint_dockerfile(content: str, *, timeout_seconds: int = 60) -> list[Finding]
 #
 # Distinct from lint_dockerfile(): these check architectural/security
 # invariants docker build --check has no opinion on, derived directly from
-# a real sample of 6 generations (see base_images.py docstring). All
-# annotate rather than block, same as verifier.check_proposed_actions() -
-# a false positive here should cost a glance, not a discarded run.
+# real samples (see base_images.py docstring). Still run against the final
+# assembled Dockerfile even now that FROM/CMD/HEALTHCHECK are templated
+# rather than model-generated - they now assert render_dockerfile() itself
+# produced correct output (a templating bug is still a bug) rather than
+# that the model remembered. All annotate rather than block, same as
+# verifier.check_proposed_actions() - a false positive here should cost a
+# glance, not a discarded run.
 
 _FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+[Aa][Ss]\s+(\S+))?\s*$", re.MULTILINE)
 _FULLY_PINNED_TAG = re.compile(r":(\d+\.\d+\.\d+)(-\S+)?$")

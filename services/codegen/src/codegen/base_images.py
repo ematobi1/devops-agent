@@ -1,23 +1,37 @@
-"""Per-app-type base image policy. The operator sets this ONCE; the model
-does not choose or vary the base image between runs.
+"""Per-app-type image AND runtime policy. The operator sets this ONCE; the
+model does not choose or vary it between runs.
 
-Found live: sampled 6 independent Dockerfile generations against the same
-static-site repo. 3 chose `nginxinc/nginx-unprivileged` (runs as non-root
-out of the box); 3 chose plain `nginx` and hand-rolled a rootless
-conversion via `sed` against the image's own /etc/nginx/nginx.conf. One of
-those three (run 2) used `sed -i '/user\\s*nginx;/d' /etc/nginx/nginx.conf`
-- a command that silently no-ops if the pattern doesn't match, leaving the
-container running as root with no error, no failed build, and no lint
-warning (`docker build --check` passed all 6 runs, including that one - it
-validates syntax, not architectural or security decisions; don't treat it
-as a safety oracle). The variance was architectural, not stylistic, and
-letting the model re-derive the base image and privilege-drop strategy
-every run is what produced it. Base image selection is a security decision
-made once by the operator, not something to re-decide per generation.
+First fix (base image as config, 2026-09-13) removed base-image/privilege-
+model variance. A follow-up 4-run sample showed the *next* layer of the
+same problem: CMD and HEALTHCHECK still regressed even with the base image
+fixed - 1/4 runs had a correct CMD, 1/4 had a correct HEALTHCHECK, no run
+had both, though the verifier correctly caught and annotated every case.
+
+CMD and HEALTHCHECK are properties of the base image and how it's meant to
+run, not something that varies per repo - same reasoning as the base image
+fix, one level further: template them deterministically instead of asking
+the model to remember them. The model's job narrows to what actually
+varies per repo: which files to COPY, where, and the --chown form.
 """
 
-BASE_IMAGES: dict[str, str] = {
-    "static-site": "nginxinc/nginx-unprivileged:1.27.4-alpine",
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AppImagePolicy:
+    image: str
+    cmd: str  # exec-form JSON array, as literal Dockerfile text, e.g. '["nginx", "-g", "daemon off;"]'
+    healthcheck: str  # everything after "HEALTHCHECK " - may include a `\` line continuation
+    port: int
+
+
+BASE_IMAGES: dict[str, AppImagePolicy] = {
+    "static-site": AppImagePolicy(
+        image="nginxinc/nginx-unprivileged:1.27.4-alpine",
+        cmd='["nginx", "-g", "daemon off;"]',
+        healthcheck="--interval=30s --timeout=3s --start-period=5s --retries=3 \\\n    CMD wget -qO- http://127.0.0.1:8080/ || exit 1",
+        port=8080,
+    ),
 }
 
 
@@ -25,12 +39,12 @@ class UnknownAppTypeError(KeyError):
     pass
 
 
-def resolve_base_image(app_type: str) -> str:
+def resolve_app_image_policy(app_type: str) -> AppImagePolicy:
     try:
         return BASE_IMAGES[app_type]
     except KeyError:
         raise UnknownAppTypeError(
-            f"no configured base image for app_type={app_type!r} - "
+            f"no configured policy for app_type={app_type!r} - "
             f"add one to BASE_IMAGES rather than letting the model choose. "
             f"Configured types: {sorted(BASE_IMAGES)}"
         ) from None

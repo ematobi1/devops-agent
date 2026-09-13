@@ -1,23 +1,26 @@
-from .base_images import BASE_IMAGES, UnknownAppTypeError, resolve_base_image
+from .base_images import BASE_IMAGES, AppImagePolicy, UnknownAppTypeError, resolve_app_image_policy
 from .dockerfile import (
     DockerCheckError,
     Finding,
-    build_dockerfile_system_prompt,
+    build_copy_instructions_prompt,
     check_dockerfile_lint_output,
     check_dockerfile_policy,
-    extract_dockerfile,
+    extract_copy_instructions,
     lint_dockerfile,
+    render_dockerfile,
 )
 
 __all__ = [
     "BASE_IMAGES",
+    "AppImagePolicy",
     "UnknownAppTypeError",
-    "resolve_base_image",
+    "resolve_app_image_policy",
     "DockerCheckError",
     "Finding",
-    "build_dockerfile_system_prompt",
+    "build_copy_instructions_prompt",
     "check_dockerfile_lint_output",
     "check_dockerfile_policy",
-    "extract_dockerfile",
+    "extract_copy_instructions",
     "lint_dockerfile",
+    "render_dockerfile",
 ]

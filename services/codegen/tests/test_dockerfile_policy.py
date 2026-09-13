@@ -1,4 +1,5 @@
-from codegen.dockerfile import check_dockerfile_policy
+from codegen.base_images import BASE_IMAGES
+from codegen.dockerfile import check_dockerfile_policy, render_dockerfile
 
 ALLOWED = frozenset({"nginxinc/nginx-unprivileged:1.27.4-alpine"})
 
@@ -130,3 +131,16 @@ def test_multiple_findings_can_coexist():
     assert "not pinned" in reasons
     assert "no explicit CMD" in reasons
     assert "no HEALTHCHECK" in reasons
+
+
+def test_templated_static_site_dockerfile_passes_policy_cleanly():
+    """Integration check that the two fixes compose correctly: a
+    deterministically-templated Dockerfile (real render_dockerfile() output,
+    real configured policy) with only a plausible model-generated COPY line
+    must clear check_dockerfile_policy() with zero findings - proving the
+    templating actually produces what the checks expect, not just that each
+    piece passes in isolation."""
+    policy = BASE_IMAGES["static-site"]
+    content = render_dockerfile(policy, "COPY --chown=nginx:nginx . /usr/share/nginx/html")
+    findings = check_dockerfile_policy(content, allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()))
+    assert findings == []
