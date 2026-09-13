@@ -58,7 +58,7 @@ export AWS_REGION=...
 .venv/Scripts/python -m pytest
 ```
 
-116 gate tests, all deterministic, no network, runs in well under a second.
+134 gate tests, all deterministic, no network, runs in well under a second.
 `scripts/setup.sh` wires these into a pre-commit hook
 (`git config core.hooksPath scripts/hooks`); CI runs them on every push/PR.
 
@@ -76,7 +76,7 @@ export AWS_REGION=...
 ```
 .venv/Scripts/python scripts/smoke_test.py read|write "<task>"    # GitHub
 .venv/Scripts/python scripts/smoke_test_aws.py "<task>"           # AWS CloudWatch, read-only
-.venv/Scripts/python scripts/generate_dockerfile.py <approvals.jsonl> <owner/repo>
+.venv/Scripts/python scripts/generate_dockerfile.py <approvals.jsonl> <owner/repo> <app-type>
 ```
 
 ## Layout
