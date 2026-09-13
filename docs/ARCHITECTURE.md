@@ -138,8 +138,7 @@ Lowest priority, no reason to design now. When it's time: OS-level STT/TTS (or a
 
 ## Explicitly not built yet (next real increment, not this one)
 
-- **Apply.** `services/approval` has no code path that actually calls GitHub or AWS with write access. Build this against the first real approved task, not speculatively — "revert a commit" and "resize an RDS instance" don't share a shape, and guessing now means rewriting later.
-- **`services/verifier`, `services/codegen`.** Same reasoning — no concrete IaC-generation or pre-apply-verification use case exists yet to build these against.
+- **`services/verifier`, `services/codegen`.** No concrete IaC-generation or pre-apply-verification use case exists yet to build these against.
 - **Vault/Secrets Manager integration.** See decision #3 above.
 - **Voice (Phase 8).** Explicitly deferred in the original doc section below; nothing changed that.
 
@@ -171,3 +170,21 @@ One real discrepancy found by independently verifying the summary (same discipli
 Environment notes: unlike `github-mcp-server` (containerized via Docker), `awslabs.cloudwatch-mcp-server` runs as a plain local `uvx` process with no CLI flags at all — no `--help` output, no read-only/toolset restriction flags; it unconditionally registers all 19 tools (all inherently read-only by name/behavior — describe/get/analyze/query/list/recommend, nothing create/update/delete/put-shaped), so the read-only guarantee rests entirely on IAM plus `orchestrator.aws_tools.CLOUDWATCH_READ_TOOLS` (Claude Code's `--allowedTools`), not on the server. `uv`/`uvx` weren't installed on this machine; installed via `pip install uv` and added to the persistent user `PATH` — but a shell already open before that PATH update won't see it, and `claude` failing to spawn `uvx` as a bare command surfaces as a generic MCP "Connection closed," which looks exactly like an auth or transport failure but is actually just PATH staleness. Hit this live, diagnosed correctly, and worked around it per-invocation rather than assuming the integration itself was broken.
 
 Also found and fixed a stale doc in this repo, not just upstream: `services/mcp-servers/cloud/README.md` previously recommended the broad `ReadOnlyAccess` managed policy (read access across nearly every AWS service) instead of the narrowly-scoped `CloudWatchReadOnlyAccess` actually used and verified here — corrected.
+
+## Apply step — scope (v1, 2026-09-13)
+
+Both integrations were validated before this was scoped: GitHub proved a real write path (Stage 2, above); AWS CloudWatch has no write-capable tools at all, so v1 apply is **GitHub only**. This isn't a placeholder decision to revisit soon — it's just where the only proven write path currently is.
+
+**Decision: approve and apply are two separate, human-triggered actions, never one.** `ApprovalStore.decide(status="approved")` only records a decision — it has no side effect beyond that, and nothing in this codebase calls `apply_approved()` automatically. A human must separately run `scripts/apply.py <approvals-file> <approval-id> <changes-file>`, which itself prompts for a typed `apply` confirmation before doing anything. Two deliberate gates, not one, before a real write happens — the same shape as approve-then-deploy in most CI/CD setups, chosen over auto-apply-on-approval specifically so approving something now and applying it later (or not at all) are both possible, and so a mistaken approval isn't immediately irreversible.
+
+**Design: `orchestrator.apply.apply_approved(approval, runner)` is integration-agnostic.** It doesn't know or care whether `runner` is wired to GitHub, AWS, or anything else — that's entirely determined by which MCP servers, credentials, and `allowed_tools` the caller builds the `ClaudeRunner` with. `scripts/apply.py` is where the GitHub-specific choice is actually made (`.mcp.github-only.json.template`, `GITHUB_WRITE_TOOLS`). This mirrors how `run_task()` is already integration-agnostic, and means a future AWS (or other) apply path is a new caller script, not a change to `apply.py` itself.
+
+**Safety:** `apply_approved()` builds its prompt from the approval's `summary`/`proposed_actions` under `APPLY_SYSTEM_PROMPT` ("execute exactly this, do not expand scope, do not merge/delete, stop and report rather than improvise"), and the runner it's given uses `GITHUB_WRITE_TOOLS` — the exact allowlist already proven live in Stage 2 (create_branch, create_or_update_file, create_pull_request, plus read tools). `merge_pull_request` and `delete_file` are not in that allowlist, so Claude Code cannot call them here regardless of what the approved plan's text says — enforced at the tool-permission layer, not just by the prompt.
+
+**Credential separation, same as the GitHub validation stages:** apply uses a write-scoped `GITHUB_PERSONAL_ACCESS_TOKEN`/`GITHUB_READ_ONLY_FLAG=--read-only=false`, distinct from whatever token a diagnostic `run_task()` call used. Never reuse a diagnostic read-only token for apply, or vice versa.
+
+**Contracts:** `apply.py` never imports `services/approval` (and vice versa) — the `ChangeRecord` dict is the boundary. `scripts/apply.py` (glue, not a service) is the only place that imports both, reads an approval via `ApprovalStore.get()`, calls `apply_approved()`, and persists the result via `ChangeLog.record()`.
+
+**Known gap, not addressed in v1:** `change_record.schema.json`'s `outcome` enum has no distinct state for "the apply run itself errored" (budget exhausted, tool denied) versus "verification found a problem" — there's no `services/verifier` yet to make that distinction meaningful, so both currently map to `failed_verification`. Revisit when verifier exists.
+
+Not built, not scoped, not needed yet: auto-apply, an AWS write path, undo/rollback of an applied change (the change itself — e.g. a PR — is the undo mechanism for now: close it), and anything beyond the create-branch/edit-file/open-PR shape already proven.

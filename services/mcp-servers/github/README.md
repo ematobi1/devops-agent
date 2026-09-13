@@ -93,10 +93,22 @@ export GITHUB_READ_ONLY_FLAG=--read-only=false
 ```
 
 This goes through `WRITE_SYSTEM_PROMPT` in `scripts/smoke_test.py`, **not**
-`orchestrator.run_task()` — it's a deliberate, human-run exception to prove
-the write path works, not the shipped apply flow (which doesn't exist yet).
-A bad run here is one open PR on a throwaway repo, closeable by hand — not
-debris in anything that matters.
+`orchestrator.run_task()` — it was a deliberate, human-run exception to prove
+the write path works, run once before the real apply step existed. A bad
+run here is one open PR on a throwaway repo, closeable by hand — not debris
+in anything that matters.
+
+## Apply (v1) — the shipped path, now that write access is validated
+
+`scripts/apply.py` executes an already-approved `ApprovalRequest` (see
+`docs/ARCHITECTURE.md` "Apply step — scope (v1)"). Same write-scoped token
+requirements as Stage 2 above (`GITHUB_PERSONAL_ACCESS_TOKEN`,
+`GITHUB_READ_ONLY_FLAG=--read-only=false`), same `GITHUB_WRITE_TOOLS`
+allowlist — this is the productionized version of the Stage 2 smoke test,
+not a separate mechanism. Requires a prior, separate approval decision
+(`ApprovalStore.decide(status="approved")`) and its own typed confirmation
+before it runs — approving something and applying it are never the same
+action.
 
 ## Cleanup after validation
 
