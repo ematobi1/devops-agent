@@ -1,18 +1,23 @@
-"""Generates a Dockerfile for a GitHub repo via a read-only Claude Code run,
-lints it deterministically via `docker build --check`, checks it against
-deterministic architectural/security policy invariants, and persists an
-ApprovalRequest - refusing only on generation failure or a real lint error;
-policy and prose findings are attached and persisted, not blocking.
+"""Generates a Dockerfile for a GitHub repo: templates FROM/CMD/HEALTHCHECK/
+EXPOSE deterministically from operator policy, asks a read-only Claude Code
+run only for the part that varies per repo (COPY instructions), lints the
+assembled result via `docker build --check`, checks it against deterministic
+architectural/security policy invariants, and persists an ApprovalRequest -
+refusing only on generation failure or a real lint error; policy and prose
+findings are attached and persisted, not blocking.
 
-Base image is a CONFIG INPUT (codegen.resolve_base_image), not something the
-model decides - see codegen/base_images.py for why: a sample of 6
-independent generations against the same repo showed the model re-deriving
-the base image and privilege-drop strategy differently each run, including
-one architecturally unsafe choice (a silently-no-op `sed` rootless
-conversion) that still passed `docker build --check` clean. Don't treat
-that lint check as a safety oracle - it validates syntax, not decisions;
+Base image, CMD, and HEALTHCHECK are CONFIG INPUTS (codegen.BASE_IMAGES),
+not generation decisions - see codegen/base_images.py for why: a sample of
+6 runs showed the model re-deriving the base image and privilege-drop
+strategy every time (one unsafe choice passed lint clean), and a follow-up
+4-run sample - with the base image fixed - showed CMD and HEALTHCHECK
+regressing anyway (1/4 correct CMD, 1/4 correct HEALTHCHECK, no run with
+both). Don't treat `docker build --check` passing as a safety or
+correctness oracle - it validates syntax, not decisions;
 codegen.check_dockerfile_policy() is what actually catches this class of
-problem, and it's a separate, deterministic check from the lint.
+problem, run against the final assembled Dockerfile even though FROM/CMD/
+HEALTHCHECK are templated now - it asserts the templating worked, not that
+the model remembered.
 
 Does NOT use orchestrator.run_task() - that function's proposed_actions
 extraction is built for numbered diagnostic action lists ("1. ... 2. ..."),
@@ -38,11 +43,12 @@ from pathlib import Path
 from approval import ApprovalStore
 from codegen import (
     BASE_IMAGES,
-    build_dockerfile_system_prompt,
+    build_copy_instructions_prompt,
     check_dockerfile_policy,
-    extract_dockerfile,
+    extract_copy_instructions,
     lint_dockerfile,
-    resolve_base_image,
+    render_dockerfile,
+    resolve_app_image_policy,
 )
 from orchestrator import GITHUB_READ_TOOLS, ClaudeRunConfig, EnvSecretsProvider, SubprocessClaudeRunner, render_mcp_config
 from verifier import check_proposed_actions
@@ -57,20 +63,20 @@ def main() -> None:
         raise SystemExit(1)
     approvals_path, target_repo, app_type = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 
-    base_image = resolve_base_image(app_type)
-    print(f"base image (operator policy, app_type={app_type!r}): {base_image}")
+    policy = resolve_app_image_policy(app_type)
+    print(f"policy (operator-configured, app_type={app_type!r}): image={policy.image} port={policy.port}")
 
     mcp_config_path = render_mcp_config(REPO_ROOT / ".mcp.github-only.json.template", EnvSecretsProvider())
     try:
         runner = SubprocessClaudeRunner(
             ClaudeRunConfig(
                 mcp_config_path=mcp_config_path,
-                system_prompt=build_dockerfile_system_prompt(base_image),
+                system_prompt=build_copy_instructions_prompt(policy),
                 max_budget_usd=1.0,
                 allowed_tools=GITHUB_READ_TOOLS,
             )
         )
-        run_result = runner.run(f"Generate a Dockerfile for the repository {target_repo}")
+        run_result = runner.run(f"Determine the COPY instructions for the repository {target_repo}")
     finally:
         mcp_config_path.unlink(missing_ok=True)
 
@@ -78,14 +84,20 @@ def main() -> None:
         print(f"generation run failed: terminal_reason={run_result.terminal_reason}", file=sys.stderr)
         raise SystemExit(1)
 
-    dockerfile_content = extract_dockerfile(run_result.result_text)
-    if dockerfile_content is None:
-        print("generation did not produce a properly labeled ```dockerfile block - refusing to propose anything", file=sys.stderr)
+    copy_instructions = extract_copy_instructions(run_result.result_text)
+    if copy_instructions is None:
+        print(
+            "generation did not produce a properly labeled ```dockerfile-copy block containing a COPY "
+            "instruction - refusing to propose anything",
+            file=sys.stderr,
+        )
         print("--- full response ---", file=sys.stderr)
         print(run_result.result_text, file=sys.stderr)
         raise SystemExit(1)
 
-    print("--- generated Dockerfile ---")
+    dockerfile_content = render_dockerfile(policy, copy_instructions)
+
+    print("--- assembled Dockerfile ---")
     print(dockerfile_content)
 
     print("--- linting via docker build --check ---")
@@ -112,15 +124,16 @@ def main() -> None:
     }
 
     # Prose check (instruction only, never payload) and Dockerfile policy
-    # check (content itself) are both deterministic, and both annotate
-    # rather than block - a false positive should cost a glance at decision
-    # time, not a discarded run. See scripts/diagnose.py and
-    # codegen/base_images.py docstrings for why each was built this way.
+    # check (the assembled content itself) are both deterministic, and both
+    # annotate rather than block - a false positive should cost a glance at
+    # decision time, not a discarded run. The policy check now mostly
+    # verifies render_dockerfile() templated correctly, not that the model
+    # remembered anything - see module docstring.
     all_findings = [
         {"action": f.action, "reason": f.reason} for f in check_proposed_actions(approval_request["proposed_actions"])
     ] + [
         {"action": "generated Dockerfile", "reason": f.reason}
-        for f in check_dockerfile_policy(dockerfile_content, allowed_base_images=frozenset(BASE_IMAGES.values()))
+        for f in check_dockerfile_policy(dockerfile_content, allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()))
     ]
     if all_findings:
         print("verifier warnings (persisted, review before deciding):")

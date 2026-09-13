@@ -8,35 +8,45 @@ was (see `docs/ARCHITECTURE.md` "services/codegen — scope").
 ## Modules
 
 - `base_images.py`:
-  - `BASE_IMAGES` — operator-set, per-`app_type` policy table mapping to one
-    specific, fully-pinned base image. The model does not choose or vary
-    the base image between runs — see the module docstring for why: a
-    sample of 6 independent generations against the same repo showed the
-    model re-deriving the base image and privilege-drop strategy
-    differently each time, including one architecturally unsafe choice
-    that still passed lint clean.
-  - `resolve_base_image(app_type)` / `UnknownAppTypeError`.
+  - `AppImagePolicy` — `image`, `cmd`, `healthcheck`, `port` as one
+    operator-configured unit. Started as just the base image; a follow-up
+    sample showed `CMD`/`HEALTHCHECK` regressing too (1/4 correct `CMD`,
+    1/4 correct `HEALTHCHECK`, no run with both) even with the base image
+    fixed — they're properties of the base image and how it's meant to
+    run, not of the repo, so they moved into policy alongside it. See the
+    module docstring for the full history (two samples, two fixes).
+  - `BASE_IMAGES` — operator-set, per-`app_type` policy table.
+    `resolve_app_image_policy(app_type)` / `UnknownAppTypeError`.
 
 - `dockerfile.py`:
-  - `build_dockerfile_system_prompt(base_image)` — instructs the model to
-    investigate a repo via read-only tools, use *exactly* the given base
-    image (non-negotiable), and end with the complete Dockerfile in a
-    `\`\`\`dockerfile` fenced block, nothing invented.
-  - `extract_dockerfile(result_text)` — pulls that labeled block out.
-    Returns `None` if absent (deliberately doesn't fall back to any
-    unlabeled fenced block, to avoid grabbing an unrelated snippet).
+  - `build_copy_instructions_prompt(policy)` — a narrow prompt: the model's
+    only job is determining which files to `COPY`, where, and the
+    `--chown` form. Explicitly forbids producing `FROM`/`CMD`/`HEALTHCHECK`/
+    `EXPOSE` — those are templated, not generated.
+  - `extract_copy_instructions(result_text)` — pulls the labeled
+    `\`\`\`dockerfile-copy` block out. Returns `None` if absent *or* if
+    present but contains no line that looks like `COPY` — following the
+    fence label without producing anything usable is still a failure to
+    follow instructions.
+  - `render_dockerfile(policy, copy_instructions)` — deterministic
+    templating. Same policy and copy instructions always produce the same
+    Dockerfile text; no LLM call.
   - `check_dockerfile_lint_output(stdout, returncode)` / `lint_dockerfile(content)`
     — `docker build --check` parsing and I/O. Validates syntax and
     BuildKit's own best-practice rules — **not** architectural or security
-    decisions. Passed all 6 sampled runs, including the unsafe one; don't
-    treat a clean lint result as a safety guarantee.
+    decisions. Passed all 6 sampled runs from the first investigation,
+    including the unsafe one; don't treat a clean lint result as a safety
+    guarantee.
   - `check_dockerfile_policy(content, *, allowed_base_images)` — deterministic
-    checks the lint has no opinion on, derived directly from the sample:
-    base image in the configured allowlist, tag fully pinned to
-    `MAJOR.MINOR.PATCH`, explicit `CMD` present, `HEALTHCHECK` present with
-    `--retries` and `--start-period`, and `sed -i` targeting `/etc/`
-    flagged (catches the exact silently-no-op rootless-conversion pattern
-    found in the sample). All annotate rather than block.
+    checks the lint has no opinion on: base image in the configured
+    allowlist, tag fully pinned to `MAJOR.MINOR.PATCH`, explicit `CMD`
+    present, `HEALTHCHECK` present with `--retries` and `--start-period`,
+    `sed -i` targeting `/etc/` flagged. Runs against the *final assembled*
+    Dockerfile even now that `FROM`/`CMD`/`HEALTHCHECK` are templated — it
+    now asserts the templating worked, not that the model remembered.
+    Needed zero code changes when the templating fix landed, since it
+    always operated on final text regardless of source. All annotate
+    rather than block.
 
 ## Why `docker build --check`, not `hadolint`
 
@@ -62,21 +72,25 @@ proposal, `codegen` checks the artifact it generated, the same way
 — that function's action-extraction is built for numbered diagnostic lists
 ("1. ... 2. ..."), not a single multi-line file's content. It calls the
 Claude Code runner directly (same pattern as `smoke_test.py`'s write mode)
-and builds the `ApprovalRequest` itself as `{instruction, payload}` (payload
-carries the raw generated file content and is never prose-scanned — see
-`docs/ARCHITECTURE.md`'s verifier false-positive writeup), runs both
-`verifier.check_proposed_actions()` and `check_dockerfile_policy()`, and
-attaches any findings as `verifier_warnings` rather than blocking. From
-there it's the same `decide.py`/`apply.py` pipeline as any other proposal;
-`apply_approved()` needed no changes.
+for the `COPY`-instructions-only prompt, assembles the full Dockerfile via
+`render_dockerfile()`, then builds the `ApprovalRequest` as
+`{instruction, payload}` (payload carries the raw generated file content
+and is never prose-scanned — see `docs/ARCHITECTURE.md`'s verifier
+false-positive writeup), runs both `verifier.check_proposed_actions()` and
+`check_dockerfile_policy()`, and attaches any findings as
+`verifier_warnings` rather than blocking. From there it's the same
+`decide.py`/`apply.py` pipeline as any other proposal; `apply_approved()`
+needed no changes.
 
 ## Validated
 
-First live run (scratch repo, no app code) found no bugs: the model
-correctly refused to fabricate a Dockerfile rather than inventing
-specifics. First happy-path attempt (a real static-site repo) found a
-verifier false positive (fixed) and, on a 6-run sample, an architectural
-base-image/privilege-model inconsistency including one unsafe run that
-passed lint clean (fixed via base-image policy + new checks above). Not
-yet validated: a fresh sample against the fixed pipeline, and the full
-path through to an applied PR.
+First live run (scratch repo, no app code): no bugs. First happy-path
+attempt (real static-site repo): a verifier false positive (fixed), then a
+6-run sample surfaced an architectural base-image/privilege-model
+inconsistency including one unsafe run that passed lint clean (fixed via
+base-image policy). A follow-up 4-run sample — base image now fixed —
+showed `CMD`/`HEALTHCHECK` regressing anyway, fixed by moving them into
+policy too and templating the whole non-`COPY` portion of the Dockerfile
+deterministically. Not yet validated: a fresh sample against the
+fully-templated pipeline (expectation is zero warnings), and the full path
+through to an applied PR.
