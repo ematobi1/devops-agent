@@ -11,11 +11,22 @@ rather than speculatively:
    actions (a literal `?`). If it finds anything, `diagnose.py` refuses to
    persist the proposal — fail closed, so a known-bad proposal never reaches
    a human reviewer or `scripts/apply.py`.
-2. **Post-apply diff verification (not yet built).** Will fetch the actual
-   result of an applied change (e.g. a PR's real diff) and confirm it's
-   consistent with what was approved — formalizing the manual `gh pr diff`
-   check done by hand throughout this project's own validation. Build once
-   #1 has landed and been exercised for real.
+2. **`check_diff()`/`fetch_pr_diff_and_state()` — post-apply diff
+   verification (built).** Given a `ChangeRecord`, `scripts/verify_apply.py`
+   extracts the PR it references, fetches the real diff and PR state via
+   `gh` (a known-PR lookup by number — deterministic I/O, not a judgment
+   call, same reasoning as `orchestrator` shelling out to `claude`/`docker`),
+   and checks two structural invariants: the diff isn't empty (catches
+   "apply claimed success but changed nothing"), and it doesn't delete a
+   file (apply's tool allowlist should make this impossible — a
+   trust-but-verify backstop on that boundary). Does **not** check PR state
+   (open/merged/closed) — an earlier version did, flagging anything but
+   `OPEN`, and was caught producing a false positive on a live, real PR that
+   a human had legitimately merged after review. A PR's terminal state is
+   decided by subsequent human action, not by apply, so there's no way to
+   tell "apply merged its own PR" (impossible given the tool allowlist) from
+   "a human merged it later" just by looking at current state — removed
+   rather than kept wrong.
 
 ## Why this is narrow
 
