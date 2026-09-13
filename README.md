@@ -24,8 +24,14 @@ real bug/finding hit along the way.
 - **Post-apply diff verification:** `scripts/verify_apply.py` fetches the
   real PR diff for an applied change and checks it's non-empty and deletes
   nothing — structural checks only, doesn't judge intent.
-- **AWS apply, `services/codegen`:** not built — no concrete use case to
-  build them against yet. See `docs/ARCHITECTURE.md`.
+- **Codegen (v1, Dockerfiles):** `scripts/generate_dockerfile.py` generates
+  a Dockerfile via Claude Code, lints it with `docker build --check`, then
+  feeds the same approve/apply pipeline as any other proposal. Validated
+  end to end on a plumbing level (correctly refuses to fabricate a
+  Dockerfile when a repo has no real app code); the happy path on a real
+  application repo isn't validated yet.
+- **AWS apply:** not built — no concrete use case to build it against yet.
+  See `docs/ARCHITECTURE.md`.
 
 ## Setup
 
@@ -52,7 +58,7 @@ export AWS_REGION=...
 .venv/Scripts/python -m pytest
 ```
 
-96 gate tests, all deterministic, no network, runs in well under a second.
+105 gate tests, all deterministic, no network, runs in well under a second.
 `scripts/setup.sh` wires these into a pre-commit hook
 (`git config core.hooksPath scripts/hooks`); CI runs them on every push/PR.
 
@@ -70,6 +76,7 @@ export AWS_REGION=...
 ```
 .venv/Scripts/python scripts/smoke_test.py read|write "<task>"    # GitHub
 .venv/Scripts/python scripts/smoke_test_aws.py "<task>"           # AWS CloudWatch, read-only
+.venv/Scripts/python scripts/generate_dockerfile.py <approvals.jsonl> <owner/repo>
 ```
 
 ## Layout
@@ -80,6 +87,7 @@ services/
   orchestrator/        trigger -> Claude Code run -> ApprovalRequest; apply_approved() executes an approved one
   approval/             append-only approval + change audit log
   verifier/              deterministic (no LLM) checks - see services/verifier/README.md
+  codegen/                generates + lints Dockerfiles - see services/codegen/README.md
   mcp-servers/
     github/README.md    registers github/github-mcp-server (official) - validated read + write + PR
     cloud/README.md      registers awslabs.cloudwatch-mcp-server (official) - validated read-only

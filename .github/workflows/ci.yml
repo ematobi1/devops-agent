@@ -18,7 +18,7 @@ jobs:
       - name: Install packages
         run: |
           python -m pip install --upgrade pip
-          pip install -e ./contracts -e ./services/orchestrator -e ./services/approval -e ./services/verifier pytest
+          pip install -e ./contracts -e ./services/orchestrator -e ./services/approval -e ./services/verifier -e ./services/codegen pytest
 
       - name: Run gate tests
         run: pytest -q
