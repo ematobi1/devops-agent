@@ -21,9 +21,11 @@ real bug/finding hit along the way.
   Claude Code run. Two separate, human-triggered actions — nothing
   auto-applies.
 - **CI:** gate tests run on every push/PR via GitHub Actions.
-- **AWS apply, `services/codegen`, post-apply diff verification:** not
-  built — no concrete use case to build them against yet. See
-  `docs/ARCHITECTURE.md`.
+- **Post-apply diff verification:** `scripts/verify_apply.py` fetches the
+  real PR diff for an applied change and checks it's non-empty and deletes
+  nothing — structural checks only, doesn't judge intent.
+- **AWS apply, `services/codegen`:** not built — no concrete use case to
+  build them against yet. See `docs/ARCHITECTURE.md`.
 
 ## Setup
 
@@ -50,7 +52,7 @@ export AWS_REGION=...
 .venv/Scripts/python -m pytest
 ```
 
-84 gate tests, all deterministic, no network, runs in well under a second.
+96 gate tests, all deterministic, no network, runs in well under a second.
 `scripts/setup.sh` wires these into a pre-commit hook
 (`git config core.hooksPath scripts/hooks`); CI runs them on every push/PR.
 
@@ -60,6 +62,7 @@ export AWS_REGION=...
 .venv/Scripts/python scripts/diagnose.py <approvals.jsonl> "<task description>"
 .venv/Scripts/python scripts/decide.py <approvals.jsonl> <approval-id> approve|reject <your-name>
 .venv/Scripts/python scripts/apply.py <approvals.jsonl> <approval-id> <changes.jsonl>
+.venv/Scripts/python scripts/verify_apply.py <changes.jsonl> <approval-id>
 ```
 
 ## Manual scripts (cost real money, need secrets configured)
