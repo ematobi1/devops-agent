@@ -1,3 +1,4 @@
+from .aws_tools import CLOUDWATCH_READ_TOOLS
 from .claude_runner import ClaudeRunConfig, ClaudeRunError, ClaudeRunner, ClaudeRunResult, SubprocessClaudeRunner, ToolCall
 from .github_tools import GITHUB_READ_TOOLS, GITHUB_WRITE_TOOLS
 from .mcp_config import render_mcp_config
@@ -13,6 +14,7 @@ __all__ = [
     "ToolCall",
     "GITHUB_READ_TOOLS",
     "GITHUB_WRITE_TOOLS",
+    "CLOUDWATCH_READ_TOOLS",
     "render_mcp_config",
     "OrchestrationError",
     "OrchestrationOutcome",
