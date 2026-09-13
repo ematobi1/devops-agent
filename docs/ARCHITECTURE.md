@@ -142,3 +142,20 @@ Lowest priority, no reason to design now. When it's time: OS-level STT/TTS (or a
 - **`services/verifier`, `services/codegen`.** Same reasoning — no concrete IaC-generation or pre-apply-verification use case exists yet to build these against.
 - **Vault/Secrets Manager integration.** See decision #3 above.
 - **Voice (Phase 8).** Explicitly deferred in the original doc section below; nothing changed that.
+
+## GitHub end-to-end validation (2026-09-13) — passed
+
+Ran the real loop against a live throwaway repo (`ematobi1/AI-AGENT-DEVOPS-ENGINEER-MCP-AGENT`), staged deliberately in two passes so a failure couldn't be ambiguous between auth, transport, and orchestration:
+
+- **Stage 1 (read-only PAT, Contents+Metadata read-only):** `orchestrator.run_task()` ran real Claude Code against the real `github-mcp-server` container, called `get_file_contents`, and produced a valid `ApprovalRequest`. $0.04.
+- **Stage 2 (write-scoped PAT, Contents+Pull requests read/write):** a deliberate bypass of `run_task()` (see `WRITE_SYSTEM_PROMPT` in `scripts/smoke_test.py` — this is not the shipped apply path) created a branch, edited `README.md`, and opened a real PR. Independently verified after the fact via `gh pr view`/`gh pr diff` — not taken on the agent's own summary — confirming the diff was exactly the one line requested and nothing else (no merge, no delete).
+
+Two real bugs found and fixed along the way, neither of them auth:
+1. **`--allowedTools` is a variadic CLI flag** that greedily consumes every following bare argv token, including the task prompt itself, unless terminated with `--`. Reproduced cheaply against a trivial built-in-tool call before ever touching GitHub credentials. Fixed in `claude_runner.py._argv()`; regression-tested in `test_claude_runner_argv.py`.
+2. **The public docs/READMEs for `github-mcp-server` were stale for the installed image version (v1.12.1).** `GITHUB_READ_ONLY`/`GITHUB_TOOLSETS` env vars are not read by this version — read-only and toolset restriction are CLI flags on the `stdio` subcommand (`stdio --read-only=<bool> --toolsets=...`). Found by pulling the real image and reading its actual `--help`, not by trusting search results. `.mcp.github-only.json.template` and `services/mcp-servers/github/README.md` reflect the verified behavior.
+
+Also added `orchestrator.github_tools` — `GITHUB_READ_TOOLS`/`GITHUB_WRITE_TOOLS`, enumerated via a real MCP `initialize`/`tools/list` JSON-RPC exchange against the running server (not guessed), giving explicit allow/default-deny tool scoping as a second, independent layer on top of the server's own `--read-only` flag.
+
+Environment quirks worth remembering for next time: Docker Desktop was not running by default on this machine and had to be started manually before the GitHub MCP server could be spawned — a prerequisite check worth automating if this becomes a recurring pain point. A `claude` CLI run can occasionally hang for the auto-mode-classifier reason surfaced as "Stage 2 classifier error... usually transient" — a retry resolved it in under 10s both times it happened; `ClaudeRunConfig.timeout_seconds` (default 300s) is what eventually surfaces this as a `ClaudeRunError` rather than hanging forever.
+
+AWS remains out of scope until a separate validation pass, per the original decision to isolate one new variable at a time.

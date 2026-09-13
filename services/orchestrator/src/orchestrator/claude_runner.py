@@ -19,6 +19,13 @@ class ClaudeRunConfig:
     max_budget_usd: float = 1.0
     timeout_seconds: int = 300
     restricted: bool = True
+    # Explicit allow-list of tool names (built-in or mcp__<server>__<tool>)
+    # this run may invoke without a human present. Anything not listed here
+    # is silently denied (--permission-prompts none), never left hanging on
+    # a prompt nobody will answer. Empty means no tool needs allow-listing
+    # (e.g. a run with no MCP servers registered) - it does NOT mean "allow
+    # everything up to the built-in default set."
+    allowed_tools: tuple[str, ...] = ()
     # None lets Claude Code use the account's configured default model.
     # Never hardcode a cheaper model here - see CLAUDE.md "no silent downgrades".
     model: str | None = None
@@ -142,6 +149,14 @@ class SubprocessClaudeRunner:
             argv.extend(["--model", self._config.model])
         if json_schema is not None:
             argv.extend(["--json-schema", json.dumps(json_schema)])
+        if self._config.allowed_tools:
+            # --allowedTools is variadic (commander <tools...>): it greedily
+            # consumes every following bare argv token, including the prompt
+            # itself, unless a "--" terminator marks where it ends. Must be
+            # the last flag added, immediately followed by "--" then prompt -
+            # verified live: omitting "--" here fails with "Input must be
+            # provided either through stdin or as a prompt argument".
+            argv.extend(["--allowedTools", " ".join(self._config.allowed_tools), "--"])
         argv.append(prompt)
         return argv
 

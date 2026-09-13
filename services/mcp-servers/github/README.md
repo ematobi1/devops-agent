@@ -1,36 +1,104 @@
 # github MCP server
 
 Not custom code — this registers GitHub's own officially maintained
-[`github/github-mcp-server`](https://github.com/github/github-mcp-server) in
-`.mcp.json.template` at the repo root. Per the "search before building" rule,
-writing a bespoke GitHub adapter would just be worse, unmaintained duplicate
-of what GitHub already ships.
+[`github/github-mcp-server`](https://github.com/github/github-mcp-server)
+(verified locally: image `ghcr.io/github/github-mcp-server`, version
+`v1.12.1`) in `.mcp.github-only.json.template` at the repo root. Per the
+"search before building" rule, writing a bespoke GitHub adapter would just be
+a worse, unmaintained duplicate of what GitHub already ships.
 
 ## Prerequisites
 
-- Docker (already installed on this machine — `docker --version` to confirm)
-- A GitHub Personal Access Token with read-only scopes (`repo:status`,
-  `public_repo` or `repo` read access, `read:org` if you need org-level
-  visibility). Fine-grained PATs are preferred — scope to the specific repos
-  the agent needs.
+- **Docker Desktop must be running.** `docker info` must succeed before
+  Claude Code can spawn this server — it will otherwise fail silently
+  mid-run with no clear auth-vs-transport signal. Confirmed on this machine:
+  Docker Desktop was not running by default and had to be started manually
+  (`"/c/Program Files/Docker/Docker/Docker Desktop.exe"`), then polled with
+  `docker info` until the daemon responded (~10s).
+- A GitHub **fine-grained** personal access token (not classic — classic
+  tokens can't be scoped to a single repo). Create one at
+  github.com → Settings → Developer settings → Personal access tokens →
+  Fine-grained tokens → Generate new token.
 
-## Configuration
+## Verified server invocation (not assumed from docs — checked against
+`docker run --rm ghcr.io/github/github-mcp-server stdio --help` directly,
+since the public docs for env-var configuration were stale for this image
+version)
 
-Set before running the orchestrator:
+- Read-only and toolset restriction are **CLI flags on the `stdio`
+  subcommand**, not environment variables: `stdio --read-only=<true|false>
+  --toolsets=repos,pull_requests`. `GITHUB_READ_ONLY` / `GITHUB_TOOLSETS` env
+  vars are **not** read by this version — don't rely on stale blog posts or
+  older READMEs that say otherwise.
+- The token **is** read from the `GITHUB_PERSONAL_ACCESS_TOKEN` environment
+  variable (confirmed: no `--token`/`--pat` flag exists; `app-id`/
+  `app-private-key-path` flags are a separate GitHub App auth path we don't
+  use).
+- `docker run <image> <flags>` (no explicit `stdio`) drops you into the root
+  command's help text instead of starting the server — the image's default
+  CMD is `stdio` with *no* args, and any arguments after the image name
+  **replace** that default rather than extend it. You must pass `stdio`
+  explicitly whenever you also pass flags.
+
+`.mcp.github-only.json.template` bakes in `stdio --read-only=${GITHUB_READ_ONLY_FLAG} --toolsets=repos,pull_requests` accordingly. Toolset is trimmed to
+`repos,pull_requests` only — the minimum needed for the Phase 1 smoke test
+(no `issues`, `actions`, etc. until a real task needs them).
+
+## Required environment variables
 
 ```
-GITHUB_PERSONAL_ACCESS_TOKEN=<your token>
+GITHUB_PERSONAL_ACCESS_TOKEN=<fine-grained token, see scopes below>
+GITHUB_READ_ONLY_FLAG=--read-only=true    # stage 1
+GITHUB_READ_ONLY_FLAG=--read-only=false   # stage 2, write-scoped token only
 ```
 
-The template pins the server to read-only mode (`GITHUB_READ_ONLY=1`) and a
-restricted toolset (`repos,issues,pull_requests,actions`) — this MCP server
-never gets write access. Any change that requires writing to GitHub (merging
-a PR, pushing a revert) goes through `services/approval`, using separate,
-explicitly-elevated credentials — never this server's token.
+`GITHUB_READ_ONLY_FLAG` has no default — `EnvSecretsProvider` raises if it's
+unset, by design: every run requires a conscious choice, never a silent
+default to write mode.
 
-## Verifying it's reachable
+## Stage 1 — read-only validation (do this first)
 
+**Token scope:** fine-grained PAT, repository access limited to one
+throwaway repo, permissions:
+- Contents: **Read-only**
+- Metadata: **Read-only** (mandatory on every fine-grained token)
+
+No `Pull requests` permission needed yet — this stage doesn't touch PRs.
+
+**Run:**
 ```
-docker pull ghcr.io/github/github-mcp-server
-docker run --rm -e GITHUB_PERSONAL_ACCESS_TOKEN -e GITHUB_READ_ONLY=1 ghcr.io/github/github-mcp-server --help
+export GITHUB_PERSONAL_ACCESS_TOKEN=<token>
+export GITHUB_READ_ONLY_FLAG=--read-only=true
+.venv/Scripts/python scripts/smoke_test.py read "read the contents of README.md in <owner>/<scratch-repo> and summarize it"
 ```
+
+This proves: token auth works, the MCP transport works (Docker spawns
+correctly, stdio handshake succeeds), and `orchestrator.run_task()` produces
+a sane `ApprovalRequest` from a real Claude Code run. If this fails, the
+failure is isolated to exactly these things — no write scope, no AWS, no
+orchestration-vs-transport ambiguity.
+
+## Stage 2 — write + PR validation (only after stage 1 passes)
+
+**Token scope:** same fine-grained PAT (edit its permissions, or use a second
+one), same throwaway repo, permissions:
+- Contents: **Read and write**
+- Metadata: **Read-only**
+- Pull requests: **Read and write**
+
+**Run:**
+```
+export GITHUB_READ_ONLY_FLAG=--read-only=false
+.venv/Scripts/python scripts/smoke_test.py write "in <owner>/<scratch-repo>, read README.md, append a line with today's date, and open a PR against main with that one-line change"
+```
+
+This goes through `WRITE_SYSTEM_PROMPT` in `scripts/smoke_test.py`, **not**
+`orchestrator.run_task()` — it's a deliberate, human-run exception to prove
+the write path works, not the shipped apply flow (which doesn't exist yet).
+A bad run here is one open PR on a throwaway repo, closeable by hand — not
+debris in anything that matters.
+
+## Cleanup after validation
+
+Close/delete the test PR and branch, and consider revoking or re-scoping the
+token back to read-only once you're done validating.
