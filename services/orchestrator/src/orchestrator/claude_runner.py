@@ -167,12 +167,23 @@ class SubprocessClaudeRunner:
                 argv,
                 capture_output=True,
                 text=True,
+                # Claude Code emits UTF-8 regardless of host locale; Windows'
+                # default locale encoding (cp1252) can't decode it and raises
+                # UnicodeDecodeError mid-read. errors="replace" means a
+                # malformed byte degrades the surrounding text rather than
+                # crashing the whole run.
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._config.timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             raise ClaudeRunError(f"claude run exceeded {self._config.timeout_seconds}s timeout") from exc
 
+        if proc.stdout is None:
+            raise ClaudeRunError(
+                f"claude produced no readable stdout (exit {proc.returncode}): {(proc.stderr or '').strip()}"
+            )
         events = parse_stream_json(proc.stdout)
         if not events:
-            raise ClaudeRunError(f"no output from claude (exit {proc.returncode}): {proc.stderr.strip()}")
+            raise ClaudeRunError(f"no output from claude (exit {proc.returncode}): {(proc.stderr or '').strip()}")
         return build_result(events)
