@@ -84,18 +84,25 @@ def main() -> None:
         "task_id": str(uuid.uuid4()),
         "summary": f"Generated Dockerfile for {target_repo}, linted clean via `docker build --check`.",
         "proposed_actions": [
-            f"Create a Dockerfile in {target_repo} with exactly the following content, via a PR:\n\n{dockerfile_content}"
+            {
+                "instruction": f"Create a Dockerfile in {target_repo} with exactly the following content, via a PR.",
+                "payload": dockerfile_content,
+            }
         ],
         "status": "pending",
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
+    # Only the instruction is prose-scanned - never payload. Findings are
+    # attached and still persisted (annotate, not block): a false positive
+    # here should cost a glance at decision time, not a whole re-run. See
+    # scripts/diagnose.py docstring for why this changed from blocking.
     verifier_findings = check_proposed_actions(approval_request["proposed_actions"])
     if verifier_findings:
-        print("REFUSING to persist - verifier found problems:")
+        print("verifier warnings (persisted, review before deciding):")
         for finding in verifier_findings:
             print(f"  - [{finding.reason}] {finding.action[:200]}")
-        raise SystemExit(1)
+        approval_request["verifier_warnings"] = [{"action": f.action, "reason": f.reason} for f in verifier_findings]
 
     ApprovalStore(approvals_path).create(approval_request)
     print(f"cost: ${run_result.total_cost_usd:.4f}")

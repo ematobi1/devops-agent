@@ -10,7 +10,7 @@ APPROVED = {
     "id": "appr-1",
     "task_id": "task-1",
     "summary": "roll back checkout deploy to previous version",
-    "proposed_actions": ["revert commit abc123 on main"],
+    "proposed_actions": [{"instruction": "revert commit abc123 on main"}],
     "status": "approved",
     "decided_by": "emma",
     "decided_at": "2026-09-13T01:00:00Z",
@@ -81,3 +81,27 @@ def test_apply_approved_rejects_malformed_approval():
     del malformed["proposed_actions"]
     with pytest.raises(jsonschema.ValidationError):
         apply_approved(malformed, FakeRunner(result_text=""))
+
+
+def test_apply_approved_includes_payload_in_prompt():
+    """Actions built by scripts/generate_dockerfile.py carry generated file
+    content in `payload`, separate from `instruction` - apply must still
+    surface that content to the write-scoped run."""
+    with_payload = dict(
+        APPROVED,
+        proposed_actions=[
+            {"instruction": "Create a Dockerfile with exactly this content, via a PR.", "payload": "FROM python:3.12-slim"}
+        ],
+    )
+    runner = FakeRunner(result_text="done")
+    apply_approved(with_payload, runner)
+    prompt = runner.seen_prompts[0]
+    assert "Create a Dockerfile with exactly this content, via a PR." in prompt
+    assert "FROM python:3.12-slim" in prompt
+
+
+def test_apply_approved_omits_payload_section_when_absent():
+    runner = FakeRunner(result_text="done")
+    apply_approved(APPROVED, runner)
+    prompt = runner.seen_prompts[0]
+    assert prompt.endswith("- revert commit abc123 on main")

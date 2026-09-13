@@ -4,13 +4,33 @@ Deterministic checks — no LLM call, same input always produces the same
 findings. Two planned checks, built sequentially against concrete need
 rather than speculatively:
 
-1. **`check_proposed_actions()` — pre-approval sanity check (built).** Runs
-   inside `scripts/diagnose.py`, after `run_task()` returns but before the
-   `ApprovalRequest` is persisted. Catches bracketed placeholder text (not
-   markdown links), TODO/FIXME/TBD/PLACEHOLDER markers, and question-phrased
-   actions (a literal `?`). If it finds anything, `diagnose.py` refuses to
-   persist the proposal — fail closed, so a known-bad proposal never reaches
-   a human reviewer or `scripts/apply.py`.
+1. **`check_proposed_actions()` — pre-approval sanity check (built, revised
+   2026-09-13 after a real false positive).** Runs in `scripts/diagnose.py`
+   and `scripts/generate_dockerfile.py`, before an `ApprovalRequest` is
+   persisted. Catches bracketed placeholder text (not markdown links or
+   valid JSON literals — see below), TODO/FIXME/TBD/PLACEHOLDER markers, and
+   question-phrased instructions (a literal `?`). Only ever scans each
+   action's `instruction` field, never its optional `payload` — raw
+   generated content (file contents, code, config) is never prose-scanned.
+   Findings are attached to the `ApprovalRequest` as `verifier_warnings` and
+   the request is persisted anyway — annotate, not block; `scripts/decide.py`
+   surfaces them again at decision time.
+
+   **The bracket check found a real false positive:** a generated
+   Dockerfile's `CMD ["nginx", "-g", "daemon off;"]` — correct, recommended
+   exec-form syntax — was flagged as a placeholder, because at the time the
+   whole file was embedded in one action string alongside its instruction.
+   Fixed two ways: (a) the heuristic now excludes anything that parses as
+   valid JSON (exec-form arrays, Terraform lists, quoted YAML flow
+   sequences) and only flags bracket content that also reads like prose
+   (starts with add/insert/replace/fill/todo/fixme/xxx/your, or contains
+   "e.g."); (b) structurally, `ApprovalRequest` actions now carry
+   `payload` separately from `instruction`, so generated file content is
+   never in the prose-scanned field at all — the actual fix, since (a)
+   alone would just recur for the next bracket-using language.
+   Blocking-vs-annotating also changed as a direct result: the original
+   false positive cost a full re-run to notice; now it would cost a glance
+   at `scripts/decide.py`'s printed warning.
 2. **`check_diff()`/`fetch_pr_diff_and_state()` — post-apply diff
    verification (built).** Given a `ChangeRecord`, `scripts/verify_apply.py`
    extracts the PR it references, fetches the real diff and PR state via

@@ -6,7 +6,7 @@ REQUEST = {
     "id": "appr-1",
     "task_id": "task-1",
     "summary": "roll back checkout deploy",
-    "proposed_actions": ["revert commit abc123"],
+    "proposed_actions": [{"instruction": "revert commit abc123"}],
     "status": "pending",
     "created_at": "2026-09-13T00:00:00Z",
 }

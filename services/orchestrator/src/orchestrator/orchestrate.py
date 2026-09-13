@@ -61,7 +61,7 @@ def run_task(task_request: dict, runner: ClaudeRunner) -> OrchestrationOutcome:
         "id": str(uuid.uuid4()),
         "task_id": task_request["id"],
         "summary": run_result.result_text,
-        "proposed_actions": proposed_actions or ["(agent proposed no concrete actions - review summary)"],
+        "proposed_actions": proposed_actions or [{"instruction": "(agent proposed no concrete actions - review summary)"}],
         "status": "pending",
         "created_at": _now_iso(),
     }
@@ -69,15 +69,23 @@ def run_task(task_request: dict, runner: ClaudeRunner) -> OrchestrationOutcome:
     return OrchestrationOutcome(task_id=task_request["id"], run_result=run_result, approval_request=approval_request)
 
 
-def _extract_proposed_actions(result_text: str) -> list[str]:
+def _extract_proposed_actions(result_text: str) -> list[dict]:
     """Pulls numbered list items ("1. ...", "2. ...") out of the agent's
-    reply. Deterministic parsing of a deterministic format request made in
-    SYSTEM_PROMPT - not an LLM call."""
+    reply, each as {"instruction": text}. Deterministic parsing of a
+    deterministic format request made in SYSTEM_PROMPT - not an LLM call.
+
+    This parser only ever captures a single line of prose per numbered item
+    (it doesn't follow continuation lines), so it never produces a
+    `payload` - that field exists for callers like
+    scripts/generate_dockerfile.py that build an ApprovalRequest directly
+    rather than through run_task(), and need to carry multi-line generated
+    content separately from the instruction that refers to it (see
+    services/verifier - payload is never prose-scanned)."""
     actions = []
     for line in result_text.splitlines():
         stripped = line.strip()
         if len(stripped) > 2 and stripped[0].isdigit():
             rest = stripped.lstrip("0123456789")
             if rest.startswith((".", ")")):
-                actions.append(rest[1:].strip())
+                actions.append({"instruction": rest[1:].strip()})
     return actions

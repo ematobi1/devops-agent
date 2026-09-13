@@ -3,6 +3,12 @@ no network call, no credentials needed: approving something here does not
 execute it. Applying an approved request is a separate, later step -
 scripts/apply.py.
 
+Prints any verifier_warnings stored on the request before recording the
+decision - services/verifier annotates rather than blocks (see
+scripts/diagnose.py), so this is the point where a human actually needs to
+see them, not just when the proposal was first generated (which could have
+happened in a different session, hours or days earlier).
+
 Usage:
     .venv/Scripts/python scripts/decide.py <approvals.jsonl> <approval-id> approve|reject <decided-by>
 """
@@ -22,6 +28,15 @@ def main() -> None:
     status = "approved" if verb == "approve" else "rejected"
 
     store = ApprovalStore(approvals_path)
+    pending = store.get(approval_id)
+
+    warnings = pending.get("verifier_warnings") or []
+    if warnings:
+        print("verifier warnings on this proposal:")
+        for warning in warnings:
+            print(f"  - [{warning['reason']}] {warning['action']}")
+        print()
+
     updated = store.decide(
         approval_id,
         status=status,

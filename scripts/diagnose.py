@@ -8,14 +8,18 @@ scripts/smoke_test.py) never persists anything.
 v1 scope: GitHub only, read-only tools (GITHUB_READ_TOOLS) - matches the
 validated Stage 1 diagnostic path exactly.
 
-Before persisting, runs the proposed_actions through
-verifier.check_proposed_actions() - a deterministic, no-LLM pattern check
-for bracketed placeholders, TODO markers, and question-phrased actions (see
-services/verifier). If it finds anything, the ApprovalRequest is NOT
-persisted - fail closed, so a known-bad proposal never reaches a human
-reviewer or scripts/apply.py. This mirrors orchestrator, approval, and
-apply.py never importing each other: verifier is wired in here, at the glue
-layer, not inside orchestrator itself.
+Before persisting, runs the proposed_actions' instructions (never payload)
+through verifier.check_proposed_actions() - a deterministic, no-LLM pattern
+check for bracketed placeholders, TODO markers, and question-phrased
+instructions (see services/verifier). Findings are attached to the
+ApprovalRequest as verifier_warnings and still persisted - annotate, not
+block. An earlier version refused to persist on any finding; changed after
+a real false positive (a generated Dockerfile's exec-form CMD array) cost a
+full re-run instead of a glance. scripts/decide.py surfaces these warnings
+again at decision time, since that's when they actually need to be seen.
+This mirrors orchestrator, approval, and apply.py never importing each
+other: verifier is wired in here, at the glue layer, not inside
+orchestrator itself.
 
 Required env: GITHUB_PERSONAL_ACCESS_TOKEN, GITHUB_READ_ONLY_FLAG=--read-only=true
 
@@ -69,17 +73,17 @@ def main() -> None:
     print(f"summary: {outcome.approval_request['summary']}")
     print("proposed actions:")
     for action in outcome.approval_request["proposed_actions"]:
-        print(f"  - {action}")
+        print(f"  - {action['instruction']}")
+        if action.get("payload"):
+            print(f"    (payload: {len(action['payload'])} chars)")
 
     findings = check_proposed_actions(outcome.approval_request["proposed_actions"])
     if findings:
         print()
-        print("REFUSING to persist this proposal - verifier found problems:")
+        print("verifier warnings (persisted, review before deciding):")
         for finding in findings:
             print(f"  - [{finding.reason}] {finding.action}")
-        print()
-        print("Fix the underlying diagnostic prompt/task and re-run, rather than editing the proposal by hand.")
-        raise SystemExit(1)
+        outcome.approval_request["verifier_warnings"] = [{"action": f.action, "reason": f.reason} for f in findings]
 
     ApprovalStore(approvals_path).create(outcome.approval_request)
     print()
