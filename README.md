@@ -1,5 +1,7 @@
 # AI DevOps Engineer Agent
 
+[![CI](https://github.com/ematobi1/devops-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/ematobi1/devops-agent/actions/workflows/ci.yml)
+
 Design: `docs/ARCHITECTURE.md`. Read that first — it explains why this isn't
 built the way the original 8-phase plan described (no OpenAI/Langchain; local
 Claude Code is the agent runtime; GitHub/AWS integrations are official MCP
