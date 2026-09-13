@@ -9,6 +9,7 @@ Usage:
 
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from approval import ApprovalStore
 
@@ -17,7 +18,7 @@ def main() -> None:
     if len(sys.argv) != 5 or sys.argv[3] not in ("approve", "reject"):
         print(f"usage: {sys.argv[0]} <approvals.jsonl> <approval-id> approve|reject <decided-by>", file=sys.stderr)
         raise SystemExit(1)
-    approvals_path, approval_id, verb, decided_by = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+    approvals_path, approval_id, verb, decided_by = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
     status = "approved" if verb == "approve" else "rejected"
 
     store = ApprovalStore(approvals_path)

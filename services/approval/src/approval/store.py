@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,8 @@ class ApprovalStore:
     lines, only append.
     """
 
-    def __init__(self, path: Path):
-        self._path = path
+    def __init__(self, path: str | os.PathLike):
+        self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         if not self._path.exists():
             self._path.write_text("")
