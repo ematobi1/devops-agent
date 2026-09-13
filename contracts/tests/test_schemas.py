@@ -25,7 +25,7 @@ VALID_APPROVAL_REQUEST = {
     "id": "appr-1",
     "task_id": "task-1",
     "summary": "roll back checkout deploy to previous version",
-    "proposed_actions": ["revert commit abc123 on main"],
+    "proposed_actions": [{"instruction": "revert commit abc123 on main"}],
     "status": "pending",
     "created_at": "2026-09-13T00:00:00Z",
 }
@@ -77,6 +77,30 @@ def test_approval_request_rejects_unknown_status():
     broken = dict(VALID_APPROVAL_REQUEST, status="maybe")
     with pytest.raises(jsonschema.ValidationError):
         validate("approval_request", broken)
+
+
+def test_approval_request_action_accepts_optional_payload():
+    with_payload = dict(
+        VALID_APPROVAL_REQUEST,
+        proposed_actions=[{"instruction": "Create Dockerfile with this content:", "payload": 'CMD ["nginx", "-g", "daemon off;"]'}],
+    )
+    validate("approval_request", with_payload)
+
+
+def test_approval_request_action_rejects_bare_string():
+    """Regression test for the proposed_actions schema migration: items are
+    objects with an instruction field, not plain strings."""
+    broken = dict(VALID_APPROVAL_REQUEST, proposed_actions=["revert commit abc123 on main"])
+    with pytest.raises(jsonschema.ValidationError):
+        validate("approval_request", broken)
+
+
+def test_approval_request_accepts_verifier_warnings():
+    with_warnings = dict(
+        VALID_APPROVAL_REQUEST,
+        verifier_warnings=[{"action": "some instruction", "reason": "phrased as a question"}],
+    )
+    validate("approval_request", with_warnings)
 
 
 def test_unknown_schema_name_raises_value_error():

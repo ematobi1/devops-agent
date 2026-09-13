@@ -15,17 +15,50 @@ what the action actually means - that's a judgment call (latent space), not
 a deterministic one, so it's not attempted here beyond the unambiguous "?"
 signal. See docs/ARCHITECTURE.md "services/verifier" for why this boundary
 was drawn where it was.
+
+Only ever scans the `instruction` field of each proposed action, never
+`payload`. Found live: a generated Dockerfile's `CMD ["nginx", "-g",
+"daemon off;"]` (correct, recommended exec-form syntax) was flagged as a
+bracketed placeholder, because the whole file's content had been embedded
+in a single action string alongside its instruction. Fixed structurally by
+splitting ApprovalRequest actions into instruction (prose, checked) and
+payload (raw generated content, never checked) - this isn't a narrower
+regex working around one case, it makes the whole failure class impossible
+for any future bracket-using language (Terraform lists, YAML flow
+sequences, JSON, ...), not just Dockerfiles.
 """
 
+import json
 import re
 from dataclasses import dataclass
 
-# A bracketed span not immediately followed by "(" - excludes markdown links
-# like "[label](url)", which are legitimate, while still catching a bare
-# placeholder like "[add other MCP operations being exercised]".
-_BRACKET_PLACEHOLDER = re.compile(r"\[[^\]]+\](?!\()")
+# Any bracketed span not immediately followed by "(" - excludes markdown
+# links like "[label](url)". Whether it's actually a placeholder is decided
+# by _looks_like_prose_placeholder(), not by this pattern alone.
+_BRACKET_SPAN = re.compile(r"\[[^\]]+\](?!\()")
 
 _TODO_MARKER = re.compile(r"\b(TODO|FIXME|TBD|XXX|PLACEHOLDER)\b", re.IGNORECASE)
+
+_PROSE_PLACEHOLDER_STARTS = ("add", "insert", "replace", "fill", "todo", "fixme", "xxx", "your")
+
+
+def _looks_like_prose_placeholder(bracket_span: str) -> bool:
+    """bracket_span includes the surrounding [ ]. A structural literal - a
+    JSON/exec-form array, a Terraform list, a quoted YAML flow sequence -
+    parses as valid JSON and is never a placeholder regardless of its
+    wording. Only bracket text that both fails to parse as JSON AND reads
+    like prose instructions (starts with a placeholder-ish verb, or
+    contains "e.g.") counts."""
+    try:
+        json.loads(bracket_span)
+        return False
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    inner = bracket_span[1:-1].strip().lower()
+    if "e.g." in inner:
+        return True
+    return inner.startswith(_PROSE_PLACEHOLDER_STARTS)
 
 
 @dataclass(frozen=True)
@@ -34,13 +67,16 @@ class Finding:
     reason: str
 
 
-def check_proposed_actions(actions: list[str]) -> list[Finding]:
+def check_proposed_actions(actions: list[dict]) -> list[Finding]:
     findings = []
     for action in actions:
-        if _BRACKET_PLACEHOLDER.search(action):
-            findings.append(Finding(action=action, reason="contains bracketed placeholder text (not a markdown link)"))
-        if _TODO_MARKER.search(action):
-            findings.append(Finding(action=action, reason="contains a TODO/FIXME/TBD/PLACEHOLDER marker"))
-        if "?" in action:
-            findings.append(Finding(action=action, reason="phrased as a question, not an executable instruction"))
+        instruction = action["instruction"]
+        for bracket_span in _BRACKET_SPAN.findall(instruction):
+            if _looks_like_prose_placeholder(bracket_span):
+                findings.append(Finding(action=instruction, reason="contains bracketed placeholder text (not a markdown link or literal array)"))
+                break
+        if _TODO_MARKER.search(instruction):
+            findings.append(Finding(action=instruction, reason="contains a TODO/FIXME/TBD/PLACEHOLDER marker"))
+        if "?" in instruction:
+            findings.append(Finding(action=instruction, reason="phrased as a question, not an executable instruction"))
     return findings

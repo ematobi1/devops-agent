@@ -12,7 +12,35 @@
     "proposed_actions": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string" }
+      "items": {
+        "type": "object",
+        "required": ["instruction"],
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human/verifier-facing prose describing what to do. Prose sanity checks (services/verifier) run only against this field, never against payload."
+          },
+          "payload": {
+            "type": "string",
+            "description": "Optional raw generated content (file contents, code, config) this instruction refers to. Never prose-scanned - may legitimately contain brackets, TODO-like tokens, or anything else that would look like a placeholder in prose."
+          }
+        }
+      }
+    },
+    "verifier_warnings": {
+      "type": "array",
+      "description": "Findings from services/verifier's pre-approval check, attached rather than blocking persistence - the operator reviews and decides. Absent or empty means clean.",
+      "items": {
+        "type": "object",
+        "required": ["action", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
     },
     "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
     "decided_by": { "type": "string" },

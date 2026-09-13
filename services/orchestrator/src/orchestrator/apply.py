@@ -32,6 +32,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _render_action(action: dict) -> str:
+    payload = action.get("payload")
+    if payload:
+        return f"- {action['instruction']}\n\n{payload}"
+    return f"- {action['instruction']}"
+
+
 def apply_approved(approval: dict, runner: ClaudeRunner) -> ApplyOutcome:
     """Executes an already-approved ApprovalRequest via `runner` and returns
     a ChangeRecord describing what happened. This is deliberately NOT called
@@ -56,7 +63,7 @@ def apply_approved(approval: dict, runner: ClaudeRunner) -> ApplyOutcome:
 
     prompt = "Approved summary:\n{}\n\nApproved actions:\n{}".format(
         approval["summary"],
-        "\n".join(f"- {action}" for action in approval["proposed_actions"]),
+        "\n\n".join(_render_action(action) for action in approval["proposed_actions"]),
     )
     run_result = runner.run(prompt)
 

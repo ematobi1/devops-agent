@@ -42,7 +42,10 @@ def test_run_task_produces_pending_approval_with_parsed_actions():
     assert outcome.task_id == "task-1"
     assert outcome.approval_request["status"] == "pending"
     assert outcome.approval_request["task_id"] == "task-1"
-    assert outcome.approval_request["proposed_actions"] == ["revert commit abc123", "page on-call"]
+    assert outcome.approval_request["proposed_actions"] == [
+        {"instruction": "revert commit abc123"},
+        {"instruction": "page on-call"},
+    ]
 
 
 def test_run_task_falls_back_when_no_numbered_actions_found():
