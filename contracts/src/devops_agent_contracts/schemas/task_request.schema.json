@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://devops-agent/contracts/task_request.schema.json",
+  "title": "TaskRequest",
+  "type": "object",
+  "required": ["id", "description", "requester", "priority", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "requester": { "type": "string", "minLength": 1 },
+    "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "allowed_toolsets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Subset of registered MCP toolsets this task run is allowed to call. Omit to allow all read-only toolsets."
+    }
+  }
+}

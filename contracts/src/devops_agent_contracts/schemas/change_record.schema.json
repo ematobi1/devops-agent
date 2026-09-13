@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://devops-agent/contracts/change_record.schema.json",
+  "title": "ChangeRecord",
+  "description": "Audit entry for a task run, from trigger through to apply or rejection.",
+  "type": "object",
+  "required": ["task_id", "approval_id", "outcome", "recorded_at"],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "approval_id": { "type": "string", "minLength": 1 },
+    "outcome": { "type": "string", "enum": ["applied", "rejected", "failed_verification"] },
+    "applied_by": { "type": "string" },
+    "detail": { "type": "string" },
+    "recorded_at": { "type": "string", "format": "date-time" }
+  }
+}

@@ -1,0 +1,16 @@
+[project]
+name = "devops-agent-contracts"
+version = "0.1.0"
+description = "Shared JSON Schema contracts for devops-agent services"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.21"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+devops_agent_contracts = ["schemas/*.json"]
