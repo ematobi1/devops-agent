@@ -204,3 +204,19 @@ The diagnostic run itself also surfaced a real prompt-quality bug before any of 
 Independently verified via `gh pr diff` (never trust the run's own narrative — same discipline as every other validation in this doc): **the actual committed content was accurate and appropriately hedged** — capability categories ("read access... file contents, commit history, branches, and pull requests"), not overclaimed specifics. But the run's own *prose summary* claimed it had "confirmed" specific tool names (`list_commits`, `list_branches`, `list_pull_requests`) were historically exercised — a claim about which MCP tools produced a given git history that isn't actually derivable from the history itself, and wasn't verified. The artifact was fine; the stated methodology overclaimed certainty it didn't have.
 
 **Takeaway for future, higher-stakes apply actions:** a capable agent given read tools alongside write tools will resolve an ambiguous "confirm/investigate" action via its own tool use rather than stopping, even when the literal instruction was written as something for a human to confirm. Fine for a low-stakes doc edit; would be exactly the wrong behavior for something like "confirm the current instance size" self-resolving into "pick a reasonable size" on real infrastructure. If a future apply target needs strict literalism, either keep read tools out of that runner's `allowed_tools` entirely, or add an explicit instruction: additional investigation beyond what the diagnostic run already found is itself a form of improvising and should stop-and-report, not execute.
+
+## CI (2026-09-13)
+
+`.github/workflows/ci.yml` runs all gate tests (pytest, deterministic, no network/secrets needed) on every push to `master` and every PR. Verified live via `gh run watch`, not just assumed from the YAML — first run passed in 20s.
+
+## services/verifier — scope (v1, 2026-09-13)
+
+Two checks, built sequentially against concrete need, not speculatively:
+
+1. **`check_proposed_actions()` — built.** Deterministic, no LLM call, pattern-matches an `ApprovalRequest`'s `proposed_actions` for bracketed placeholders (excluding real markdown links via a negative lookahead so `[label](url)` isn't flagged), TODO/FIXME/TBD/PLACEHOLDER markers, and literal `?` characters. Directly motivated by the placeholder/question bug found during apply-step validation, above — this is a second, independent, deterministic layer that catches the same failure shape even if `SYSTEM_PROMPT` ever slips, rather than relying on prompt-following alone.
+
+   Deliberately does **not** attempt to detect "this action is secretly a question" beyond the `?` signal — distinguishing a legitimate executable action from one that actually requires human judgment needs understanding what the action means, which is a latent-space judgment call, not a deterministic mapping. Forcing a regex to do that job would just trade one failure mode (an LLM writing a bad action) for another (a fragile heuristic misclassifying a good one). The real fix for that class of problem stays at the prompt level.
+
+   Wired in at `scripts/diagnose.py`, not inside `orchestrator.run_task()` — same "services never import each other, glue scripts wire them together" pattern as `apply.py`. If verification finds anything, `diagnose.py` refuses to persist the `ApprovalRequest` at all: fail closed, so a known-bad proposal never reaches a human reviewer or `apply.py`.
+
+2. **Post-apply diff verification — not built yet.** Will fetch what an applied change actually produced (e.g. a PR's real diff) and confirm it matches what was approved, formalizing the manual `gh pr diff` checks done by hand throughout this document's own validation sections into an automated step. Scoped to start once #1 has been exercised for real, per the operator's explicit sequencing decision.

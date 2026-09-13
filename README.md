@@ -11,15 +11,19 @@ real bug/finding hit along the way.
 ## Status (2026-09-13)
 
 - **Diagnostic loop:** working end to end against real GitHub and real AWS
-  CloudWatch. `orchestrator.run_task()` takes a `TaskRequest`, runs local
-  Claude Code headlessly and read-only against the registered MCP servers,
-  and produces a pending `ApprovalRequest` in `services/approval`.
-- **Apply (v1, GitHub only):** working end to end. `scripts/apply.py`
-  executes an already-approved request via a write-scoped Claude Code run
-  (`orchestrator.apply.apply_approved()`). Approving a request and applying
-  it are two separate, human-triggered actions — nothing auto-applies.
-- **AWS apply, `services/verifier`, `services/codegen`:** not built — no
-  concrete use case to build them against yet. See `docs/ARCHITECTURE.md`.
+  CloudWatch. `scripts/diagnose.py` runs `orchestrator.run_task()`, verifies
+  the result with `services/verifier`, and persists a pending
+  `ApprovalRequest` in `services/approval` — or refuses to, if verification
+  finds a problem.
+- **Approve/apply (v1, GitHub only):** working end to end. `scripts/decide.py`
+  records an approve/reject decision (pure local state, no credentials);
+  `scripts/apply.py` executes an already-approved request via a write-scoped
+  Claude Code run. Two separate, human-triggered actions — nothing
+  auto-applies.
+- **CI:** gate tests run on every push/PR via GitHub Actions.
+- **AWS apply, `services/codegen`, post-apply diff verification:** not
+  built — no concrete use case to build them against yet. See
+  `docs/ARCHITECTURE.md`.
 
 ## Setup
 
@@ -46,16 +50,23 @@ export AWS_REGION=...
 .venv/Scripts/python -m pytest
 ```
 
-68 gate tests, all deterministic, no network, runs in well under a second.
+84 gate tests, all deterministic, no network, runs in well under a second.
 `scripts/setup.sh` wires these into a pre-commit hook
-(`git config core.hooksPath scripts/hooks`).
+(`git config core.hooksPath scripts/hooks`); CI runs them on every push/PR.
+
+## Running the pipeline
+
+```
+.venv/Scripts/python scripts/diagnose.py <approvals.jsonl> "<task description>"
+.venv/Scripts/python scripts/decide.py <approvals.jsonl> <approval-id> approve|reject <your-name>
+.venv/Scripts/python scripts/apply.py <approvals.jsonl> <approval-id> <changes.jsonl>
+```
 
 ## Manual scripts (cost real money, need secrets configured)
 
 ```
 .venv/Scripts/python scripts/smoke_test.py read|write "<task>"    # GitHub
 .venv/Scripts/python scripts/smoke_test_aws.py "<task>"           # AWS CloudWatch, read-only
-.venv/Scripts/python scripts/apply.py <approvals.jsonl> <approval-id> <changes.jsonl>
 ```
 
 ## Layout
@@ -65,6 +76,7 @@ contracts/            shared JSON Schemas + validate() - both sides import, neve
 services/
   orchestrator/        trigger -> Claude Code run -> ApprovalRequest; apply_approved() executes an approved one
   approval/             append-only approval + change audit log
+  verifier/              deterministic (no LLM) checks - see services/verifier/README.md
   mcp-servers/
     github/README.md    registers github/github-mcp-server (official) - validated read + write + PR
     cloud/README.md      registers awslabs.cloudwatch-mcp-server (official) - validated read-only
