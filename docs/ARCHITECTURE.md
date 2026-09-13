@@ -11,20 +11,35 @@ Two things in the phase list you pasted need fixing before anything gets built, 
 1. **LLM access.** Your CLAUDE.md rule is explicit: no OpenAI/Anthropic-API calls for agent reasoning — route through **local Claude Code**. Phases 2, 3, 5 as originally described (raw OpenAI API + Langchain) are out. See "LLM access" below for the replacement.
 2. **"MCP" is Model Context Protocol**, not "Model-based Comms Protocol" — it's Anthropic's open standard for wiring an LLM client to external tools/data sources over a typed JSON-RPC interface. Claude Code is already an MCP client and can run its own agent loop against MCP servers. That changes the shape of Phases 2–4 substantially (next section).
 
-## The real architectural decision
+## The real architectural decision — DECIDED: Option B
 
-This is a genuine fork — pick one before any code gets written:
+Claude Code is the agent runtime. It already provides a ReAct-style plan/act/observe loop, native MCP tool calling, subagents, hooks, permission gating, and skills. `orchestrator` drives it headlessly and owns only the DevOps-specific policy layer (what triggers a run, what gets logged, what needs human approval) rather than reimplementing a tool loop against a raw LLM API. Confirmed 2026-09-13.
 
-**Option A — Reimplement the agent loop.** Build a custom ReAct loop, planner, and tool-dispatch layer that calls the local Claude Code binary as a "dumb" text-completion backend (one-shot prompts in, text out), the way the original plan called OpenAI.
+## Confirmed invocation shape (verified against a live `claude --help` and two real headless runs, not guessed)
 
-**Option B — Claude Code *is* the agent runtime (recommended).** Claude Code already provides: a ReAct-style plan/act/observe loop, native MCP tool calling, subagents, hooks, permission gating, and skills. Instead of rebuilding that, you:
-- Write your DevOps tools (log search, metrics query, GitHub, AWS, Slack) as **MCP servers** — small, testable, independently deployable — and register them with Claude Code via `.mcp.json`.
-- Drive Claude Code **headlessly** for the "agent" use case, either via `claude -p "<task>" --output-format stream-json` or the Claude Agent SDK (Python/TypeScript), from a thin orchestrator service that owns the DevOps-specific policy: what triggers a run, what gets logged, what needs human approval before it's allowed to execute.
-- Get Phases 2–4 of the original plan (ReAct loop, RAG-style retrieval, tool integration) essentially for free, and spend your engineering effort on the parts that are actually DevOps-specific: the MCP tool servers, the verification/approval gate, and IaC generation quality.
+```
+claude --print --output-format stream-json --verbose \
+  --setting-sources project,local \
+  --mcp-config <rendered .mcp.json> --strict-mcp-config \
+  --permission-mode dontAsk --permission-prompts none \
+  --no-session-persistence --max-budget-usd <cap> \
+  --restricted \
+  --system-prompt "<diagnostic-only persona>" \
+  "<task description>"
+```
 
-Option B is less total code, less to maintain, and matches the "search before building — Layer 1: is there a standard tool that does this" rule directly: Claude Code + MCP *is* the tried-and-true layer here, not a library you'd pull off GitHub.
+Key flags and why:
+- `--setting-sources project,local` — excludes the operator's personal `~/.claude/CLAUDE.md` and global rules from every run. Without this, a cold run pulls in ~18k tokens of irrelevant personal context (measured live) before it does anything DevOps-related. `--bare` would do this too but forces `ANTHROPIC_API_KEY` auth instead of the normal subscription session — wrong tradeoff here.
+- `--strict-mcp-config` + `--mcp-config <rendered file>` — the run can only call the MCP servers `orchestrator` explicitly renders in for it, nothing from the operator's global MCP config.
+- `--restricted` — strips Bash/PowerShell/code-execution tools and WebFetch. A diagnostic run has no business running shell commands; it only gets the registered MCP tools.
+- `--permission-prompts none` — nothing can block waiting for a human in an unattended run; anything that would need a prompt is denied instead. Combined with `--restricted` and read-only MCP scopes, that's the actual safety boundary, not a permission dialog no one is watching.
+- `--max-budget-usd` — hard spend cap per run, enforced by Claude Code itself (`terminal_reason: "budget_exhausted"` on a live test).
+- `--model` intentionally omitted by default (`ClaudeRunConfig.model = None`) — let the account's configured default stand rather than hardcode a cheaper model. See `--model` docstring in `services/orchestrator/src/orchestrator/claude_runner.py`.
+- `--output-format stream-json` over plain `json` — the single-result `json` mode only gives the final text and totals; `stream-json` also surfaces every `tool_use`/`tool_result` event, which `build_result()` turns into the audit-trail `ToolCall` list.
 
-**I'm building the rest of this doc around Option B.** If you want Option A instead (e.g. because this needs to run without Claude Code installed, or needs a different LLM at some point), say so and the service boundaries below change.
+## Secrets never touch git or raw string interpolation
+
+`.mcp.json.template` (committed) holds `${VAR}`-shaped placeholders only. `orchestrator.mcp_config.render_mcp_config()` parses it as JSON first, substitutes matching string *values* (not raw text) using a `SecretsProvider`, then re-serializes — a secret containing a quote or newline can't corrupt the config or inject a key. The rendered file is written to a temp path per run and is gitignored.
 
 ## Services-first layout
 
@@ -42,12 +57,9 @@ devops-agent/
       evals/                     # periodic: does the produced plan actually address the incident
       README.md
     mcp-servers/
-      logs/                      # MCP server: search app/infra logs
-      metrics/                   # MCP server: query Prometheus/Grafana/Datadog etc.
-      github/                    # MCP server: PRs, issues, repo state
-      cloud/                     # MCP server: read-only cloud resource state (AWS/GCP/Azure)
-      slack/                     # MCP server: post updates, ask for approval
-      each with: src/, tests/, evals/, README.md, its own schema in contracts/
+      github/README.md            # registers github/github-mcp-server (official, read-only scoped) - no custom code
+      cloud/README.md              # registers awslabs/mcp servers: cloudwatch, aws-iac (official) - no custom code
+      logs/, metrics/, slack/       # build only when a concrete first use case needs them - see open question #2
     codegen/                     # Terraform/Dockerfile/config generation, invoked as a Claude Code skill or MCP tool
       tests/                     # gate: generated HCL/Dockerfile parses, lints clean
       evals/                     # periodic: generated IaC actually satisfies the request (LLM-judged)
@@ -59,7 +71,7 @@ devops-agent/
     voice/                       # Phase 8, deferred — see "Deferred" section
   docs/
     ARCHITECTURE.md              # this file
-  .mcp.json                      # registers services/mcp-servers/* with Claude Code
+  .mcp.json.template             # secret-free template; orchestrator renders real values in per-run
   scripts/                       # orchestration/glue only, no business logic
 ```
 
@@ -86,7 +98,7 @@ flowchart LR
 
 ## LLM access
 
-`services/orchestrator` never calls an LLM API directly. It shells out to local Claude Code (headless `-p` mode or the Claude Agent SDK) with `.mcp.json` loaded, so Claude Code's own tool loop talks to your MCP servers directly — the orchestrator's job is choosing *when* to run, capturing the transcript for audit, and gating on `approval` before anything with side effects executes. Exact SDK/CLI invocation flags should be confirmed against current Claude Code docs at implementation time (pull in the `claude-code-guide` agent for that — don't guess flag names here).
+`services/orchestrator` never calls an LLM API directly. It shells out to local Claude Code in headless `--print` mode with a rendered `.mcp.json` loaded, so Claude Code's own tool loop talks to your MCP servers directly — the orchestrator's job is choosing *when* to run, capturing the transcript for audit, and gating on `approval` before anything with side effects executes. Exact invocation flags are verified above, not guessed — see `services/orchestrator/src/orchestrator/claude_runner.py`.
 
 ## Phase mapping (original plan → this architecture)
 
@@ -110,12 +122,23 @@ flowchart LR
 
 Lowest priority, no reason to design now. When it's time: OS-level STT/TTS (or a small local library) is enough for a wake-word + push-to-talk flow — no need for Alexa/Google Assistant platform lock-in for a personal DevOps tool.
 
-## Open questions (need your call before implementation starts)
+## Decisions (2026-09-13)
 
-1. **Option A vs B above** — confirm Option B (Claude Code as runtime) or say why you need A.
-2. **Which tools first?** Original plan says GitHub, AWS, Gmail, Slack. Building all four MCP servers in parallel is fine (services-first, fan out), but which one is the actual daily pain point you want solved first — that's the one to build and eval against real usage, not the others.
-3. **Apply-time credentials** — `services/approval` will hold real write-access credentials (cloud, GitHub). Where do those live (env vars per your API rules, a secrets manager)? Not deciding this before implementation means it gets decided badly under time pressure.
+1. **Option B confirmed** — Claude Code is the agent runtime.
+2. **First tool integrations: GitHub + AWS cloud.** Logs/metrics next, Slack after that — build each when a concrete task actually needs it, not speculatively.
+3. **Secrets** — production: a real secrets manager (Vault / AWS Secrets Manager / GCP Secret Manager), fetched just-in-time by `orchestrator`, never persisted by the agent. Local dev: env vars. Built now: the `SecretsProvider` protocol (`services/orchestrator/src/orchestrator/secrets.py`) and `EnvSecretsProvider` for local dev. **Not built yet**: a Vault/Secrets-Manager-backed implementation — there's no production deployment target to point it at yet, so it would be a speculative stub. Implement it against the same protocol when you pick a deployment target; that's a same-session addition, not a redesign.
 
-## Next step
+## Phase 1 MVP — built (this repo, 2026-09-13)
 
-Once you've answered the three questions above, Phase 1 (env scaffolding for `orchestrator` + one MCP server) is a same-session build with tests in the diff, per your own "ship the complete thing" rule.
+- `contracts/` — 4 JSON schemas + `validate()`, 11 tests.
+- `services/orchestrator/` — `SubprocessClaudeRunner` (verified CLI invocation, see above), `render_mcp_config` (safe secret substitution), `run_task()` (task → diagnostic Claude Code run → pending `ApprovalRequest`, never applies), 37 tests, all using a fake runner — no live LLM calls in the gate suite.
+- `services/approval/` — `ApprovalStore` (append-only, enforces pending→decided exactly once) and `ChangeLog` audit trail, 10 tests.
+- `.mcp.json.template` + READMEs registering the official `github-mcp-server` and two `awslabs/mcp` servers (`cloudwatch`, `aws-iac`) — no custom MCP server code written, per "search before building."
+- 48 gate tests total, <1s, wired to a pre-commit hook (`git config core.hooksPath scripts/hooks`, done by `scripts/setup.sh`).
+
+## Explicitly not built yet (next real increment, not this one)
+
+- **Apply.** `services/approval` has no code path that actually calls GitHub or AWS with write access. Build this against the first real approved task, not speculatively — "revert a commit" and "resize an RDS instance" don't share a shape, and guessing now means rewriting later.
+- **`services/verifier`, `services/codegen`.** Same reasoning — no concrete IaC-generation or pre-apply-verification use case exists yet to build these against.
+- **Vault/Secrets Manager integration.** See decision #3 above.
+- **Voice (Phase 8).** Explicitly deferred in the original doc section below; nothing changed that.

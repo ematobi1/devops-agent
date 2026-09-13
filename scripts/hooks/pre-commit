@@ -1,0 +1,6 @@
+#!/bin/sh
+# Gate tests: deterministic, free, <2s, no network. Run on every commit.
+# Enable with: git config core.hooksPath scripts/hooks
+set -e
+cd "$(git rev-parse --show-toplevel)"
+".venv/Scripts/python" -m pytest -q
