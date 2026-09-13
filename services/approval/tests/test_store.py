@@ -69,3 +69,17 @@ def test_store_persists_across_instances(tmp_path):
     ApprovalStore(path).create(REQUEST)
     reloaded = ApprovalStore(path)
     assert reloaded.get("appr-1")["status"] == "pending"
+
+
+def test_accepts_a_plain_string_path():
+    """Regression test: scripts/decide.py passed sys.argv[1] (a str) straight
+    through without wrapping it in Path(), and __init__ crashed on
+    self._path.parent since str has no .parent. Constructor now normalizes
+    str | PathLike itself rather than relying on every caller to remember."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path_str = f"{tmp}/nested/approvals.jsonl"
+        store = ApprovalStore(path_str)
+        store.create(REQUEST)
+        assert store.get("appr-1")["status"] == "pending"
