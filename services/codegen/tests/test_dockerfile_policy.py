@@ -144,3 +144,40 @@ def test_templated_static_site_dockerfile_passes_policy_cleanly():
     content = render_dockerfile(policy, "COPY --chown=nginx:nginx . /usr/share/nginx/html")
     findings = check_dockerfile_policy(content, allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()))
     assert findings == []
+
+
+def test_copy_enumerating_the_exact_real_regression_is_flagged():
+    """The exact real bug: COPY listed index.html, styles.css, script.js
+    explicitly and silently omitted images/, referenced by index.html -
+    the container served a page with broken images, and lint/policy (pre-fix)
+    both passed clean."""
+    content = GOOD_DOCKERFILE.replace(
+        "COPY --chown=nginx:nginx . /usr/share/nginx/html",
+        "COPY --chown=nginx:nginx index.html styles.css script.js /usr/share/nginx/html/",
+    )
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert any("enumerate individual files" in f.reason for f in findings)
+
+
+def test_copy_of_whole_directory_with_dot_is_not_flagged():
+    assert check_dockerfile_policy(GOOD_DOCKERFILE, allowed_base_images=ALLOWED) == []
+
+
+def test_copy_single_file_with_extension_is_flagged():
+    content = GOOD_DOCKERFILE.replace(
+        "COPY --chown=nginx:nginx . /usr/share/nginx/html",
+        "COPY --chown=nginx:nginx index.html /usr/share/nginx/html/index.html",
+    )
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert any("enumerate individual files" in f.reason for f in findings)
+
+
+def test_copy_of_named_subdirectory_without_extension_is_not_flagged():
+    """A single source with no file extension (e.g. a build output
+    directory) looks like a directory copy, not enumeration."""
+    content = GOOD_DOCKERFILE.replace(
+        "COPY --chown=nginx:nginx . /usr/share/nginx/html",
+        "COPY --chown=nginx:nginx dist /usr/share/nginx/html",
+    )
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert not any("enumerate individual files" in f.reason for f in findings)

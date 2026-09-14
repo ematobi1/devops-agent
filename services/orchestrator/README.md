@@ -25,6 +25,18 @@ GitHub or AWS. The only thing downstream of `run_task()` is a record in
 - `orchestrate.py` — `run_task(task_request, runner)`: validates the request
   against `contracts/task_request.schema.json`, runs Claude Code with a
   diagnostic-only system prompt, and builds the `ApprovalRequest`.
+- `apply.py` — `apply_approved(approval, runner)`: executes an already
+  `approved` `ApprovalRequest` and builds a `ChangeRecord`. Deliberately
+  integration-agnostic (doesn't know GitHub/AWS/anything — that's entirely
+  determined by `runner`'s MCP config and tool allowlist), so it classifies
+  outcome using only the Claude Code run's own `is_error` flag. **Known
+  limitation, found live:** a model that hits a real failure (e.g. a 403)
+  and gracefully explains it before stopping produces `is_error: False` —
+  identical to genuine success — so `apply_approved()` alone cannot tell
+  "nothing happened, explained clearly" apart from "it worked." Callers
+  that know their integration must verify further; `scripts/apply.py` does
+  this for GitHub by checking `verifier.find_pr_reference()` against the
+  result text before trusting an "applied" outcome.
 
 ## Running a real task (requires secrets configured — see
 `services/mcp-servers/*/README.md`)

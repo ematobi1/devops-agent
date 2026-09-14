@@ -41,12 +41,17 @@ was (see `docs/ARCHITECTURE.md` "services/codegen — scope").
     checks the lint has no opinion on: base image in the configured
     allowlist, tag fully pinned to `MAJOR.MINOR.PATCH`, explicit `CMD`
     present, `HEALTHCHECK` present with `--retries` and `--start-period`,
-    `sed -i` targeting `/etc/` flagged. Runs against the *final assembled*
-    Dockerfile even now that `FROM`/`CMD`/`HEALTHCHECK` are templated — it
-    now asserts the templating worked, not that the model remembered.
-    Needed zero code changes when the templating fix landed, since it
-    always operated on final text regardless of source. All annotate
-    rather than block.
+    `sed -i` targeting `/etc/` flagged, and `COPY` enumerating individual
+    files rather than a whole directory flagged (found live: a Dockerfile
+    copying `index.html`/`styles.css`/`script.js` explicitly silently
+    omitted `images/`, referenced by `index.html` — lint and every other
+    policy invariant passed clean; a heuristic backstop, not proof of
+    completeness — see `docs/ARCHITECTURE.md`'s note on why real
+    completeness verification is a fundamentally different, unbuilt class
+    of check). Runs against the *final assembled* Dockerfile even now that
+    `FROM`/`CMD`/`HEALTHCHECK` are templated — it now asserts the
+    templating worked, not that the model remembered. All annotate rather
+    than block.
 
 ## Why `docker build --check`, not `hadolint`
 
