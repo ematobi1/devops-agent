@@ -287,3 +287,34 @@ The base-image fix above (4/4 correct in a follow-up sample) proved the pattern;
 The old full-Dockerfile prompt/extraction (`build_dockerfile_system_prompt`/`extract_dockerfile`) was deleted outright rather than kept alongside the new narrower path — it was demonstrably the source of the variance being fixed, and nothing else used it.
 
 All four sample approvals rejected. Ready for a fresh 4-run sample against the fixed pipeline — expectation, per the operator, is zero warnings.
+
+## Fresh sample clean (2026-09-14), but apply surfaced a third real bug — and a fourth
+
+The fully-templated pipeline sampled clean: 4/4, zero warnings. The operator approved one (`dfaa9ef2`) and asked for the apply command. `apply.py` returned a 403 on `create_branch` — expected, since the write-scoped token hadn't been given access to the new target repo yet — but investigating it surfaced two more real, more serious problems before the token issue itself was even the point.
+
+### Bug 3: `apply_approved()`'s outcome classification was wrong
+
+The `ChangeRecord` for the failed attempt said `outcome: "applied"`. Its own `detail` field said the opposite — a 403 on `create_branch`, nothing written, the model correctly stopped and explained why rather than trying a workaround. The classification logic was `outcome = "applied" if not run_result.is_error else "failed_verification"` — but a model that hits a real failure and *gracefully explains it before stopping* produces `is_error: False` at the Claude Code run level, identical to genuine success. The audit trail this whole project has leaned on for independent verification was, in this exact case, wrong.
+
+Fixed in `scripts/apply.py`, not `orchestrator.apply_approved()` — that function must stay integration-agnostic and has no way to know what "a successful write" means for an arbitrary integration. `apply.py` already knows it's GitHub-specific, so after a claimed "applied" outcome it now checks `verifier.find_pr_reference()` against the result text (a utility already built and tested for `verify_apply.py`) — a real GitHub apply always ends in a PR URL; if the outcome says applied but no PR URL appears anywhere, that's a contradiction, downgraded to `failed_verification` with a loud printed warning before persisting. Verified live against the actual mislabeled record's real detail text before considering it fixed, not just asserted. A corrective `ChangeRecord` was appended to `data/changes.jsonl` for the historical entry — append-only, the original wrong record is left in place, not edited.
+
+Separately: `ApprovalStore.decide()`'s exactly-once guard correctly refused to let `dfaa9ef2` be re-decided once approved. Given nothing was ever actually applied under it (confirmed via the change record before the correction), leaving its status as `approved` is historically accurate and operationally harmless — nothing will ever call `apply.py` on that id again once a corrected proposal supersedes it. No change made to `ApprovalStore`'s decision model; revisit only if retroactively revoking an approved-but-unapplied decision becomes a recurring, not one-off, need.
+
+### Bug 4: the generated Dockerfile was structurally clean and functionally incomplete
+
+Every sampled run (across all fixes so far) produced `COPY index.html styles.css script.js <dest>` — a hand-picked file list. `index.html` references `images/profile-pic.jpg` and `images/project1-img.jpg`; the `images/` directory was never copied. Lint passed. All four policy invariants passed. A real `docker build` would have succeeded. The resulting container would serve a page with broken images.
+
+**Root cause:** `build_copy_instructions_prompt()` asked the model to determine "which files or directories" to copy, and it defaulted to enumerating top-level files rather than walking the tree — the wrong framing for a static site, where the correct answer is almost always "copy the whole site directory," not a curated list. Fixed by rewriting the prompt to explicitly forbid enumeration and require a single `COPY` instruction for the entire identified site directory, spelling out why (subdirectories like `images/` won't be visible from a top-level-only listing, and a hand-picked list silently drops whatever wasn't named).
+
+**Added a deterministic backstop**, same pattern as every other prompt fix in this document: `check_dockerfile_policy()` now flags a `COPY` with more than one source, or a single source that looks like a specific file (has an extension) rather than a directory — heuristic, not proof (a genuinely single-file app's `COPY` would also match), so it annotates. Regression test reproduces the exact real case (the three-file enumeration that omitted `images/`).
+
+### A different class of problem, recorded per the operator's request, not solved
+
+Lint validates syntax. Policy checks validate architectural/security invariants that hold *regardless of which app* is being containerized (pinned tags, an allowlisted base image, a real healthcheck). Neither one, and nothing built so far, can know whether the copied content is *complete with respect to what this specific app needs* — that requires knowing what the app actually references, which is inherently content-specific, not a universal rule. The heuristic added for bug 4 is a narrow, static-site-specific stopgap for one failure shape (enumeration), not a general completeness check, and it would not catch, for example, a whole-directory `COPY` that still missed an asset living outside the identified site directory.
+
+Two genuinely different approaches exist for real completeness verification, neither built:
+
+1. **Static cross-reference.** Parse the app's own source (e.g., every `src=`/`href=` in `index.html`, every `url()`/`@import` in CSS) for referenced paths, fetch the actual repository tree, and confirm every reference resolves to something that would land inside the `COPY`'s source directory. Fully deterministic given the inputs, but requires the check to run somewhere with live repo access (not just the final Dockerfile text) — a different shape of check than anything in `services/codegen` today, closer to a second investigation step than a text-pattern check.
+2. **Dynamic verification.** Actually build the image (not just `--check`) and run it, then crawl the exposed port for 404s against whatever the entry page references. Tests real end-to-end behavior, not an inference from source, at the cost of an actual build+run+network round trip per candidate Dockerfile.
+
+Neither is scoped or built. Worth deciding between them (or whether either is worth the cost) before generating anything with a real build step or a deeper asset graph than a flat static site — a compiled app, a framework with its own asset pipeline, or anything where "copy everything" stops being the obviously-correct default.

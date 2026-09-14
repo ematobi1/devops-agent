@@ -39,24 +39,34 @@ from .base_images import AppImagePolicy
 def build_copy_instructions_prompt(policy: AppImagePolicy) -> str:
     return (
         "You are a DevOps agent determining how to get a repository's "
-        "files into a Docker image. The Dockerfile's base image, CMD, "
-        "HEALTHCHECK, and EXPOSE are already fixed by operator policy - "
-        f"do not produce or repeat them. The image is {policy.image}.\n\n"
+        "static site files into a Docker image. The Dockerfile's base "
+        "image, CMD, HEALTHCHECK, and EXPOSE are already fixed by operator "
+        f"policy - do not produce or repeat them. The image is {policy.image}.\n\n"
         "Investigate the repository using only the read-only MCP tools "
-        "available to you. Determine exactly which files or directories "
-        "need to be copied into the image, the correct destination path "
-        "for this base image, and an appropriate --chown form so the "
-        "process (running as a non-root user in this image) can read "
-        "them.\n\n"
-        "End your reply with only the Dockerfile COPY instruction(s) "
-        "needed - one or more lines, nothing else - in a single fenced "
-        "code block labeled dockerfile-copy:\n"
+        "available to you. Identify the directory that contains the "
+        "site's complete set of static assets - usually the repository "
+        "root itself, unless the site's files live in a specific "
+        "subdirectory such as a build output folder. Do NOT enumerate "
+        "individual files: a real site references assets in "
+        "subdirectories (images/, css/, js/, fonts/, etc.) that you will "
+        "not see by looking only at top-level files, and a hand-picked "
+        "file list will silently omit them, producing a container that "
+        "serves a page with broken links. Produce a single COPY "
+        "instruction that copies the ENTIRE identified directory - every "
+        "file and subdirectory it contains - into the image, so nothing "
+        "the site references can be missing. Determine the correct "
+        "destination path for this base image and an appropriate --chown "
+        "form so the process (running as a non-root user in this image) "
+        "can read the copied files.\n\n"
+        "End your reply with only that single Dockerfile COPY instruction "
+        "- nothing else - in a fenced code block labeled dockerfile-copy:\n"
         "```dockerfile-copy\n"
         "...\n"
         "```\n"
         "Do not include FROM, CMD, HEALTHCHECK, EXPOSE, or any other "
-        "instruction - only COPY. Every line must be complete and correct "
-        "as written - no placeholders."
+        "instruction, and do not list individual files - copy the whole "
+        "directory. Every line must be complete and correct as written - "
+        "no placeholders."
     )
 
 
@@ -179,6 +189,35 @@ _FULLY_PINNED_TAG = re.compile(r":(\d+\.\d+\.\d+)(-\S+)?$")
 _CMD_LINE = re.compile(r"^\s*CMD\s", re.MULTILINE | re.IGNORECASE)
 _HEALTHCHECK_BLOCK = re.compile(r"^[ \t]*HEALTHCHECK\b(?:.*\\\r?\n)*.*$", re.MULTILINE | re.IGNORECASE)
 _SED_ETC = re.compile(r"\bsed\b[^\n]*-i[^\n]*/etc/", re.IGNORECASE)
+_COPY_INSTRUCTION = re.compile(r"^\s*COPY\s+(.+)$", re.MULTILINE | re.IGNORECASE)
+_FLAG_TOKEN = re.compile(r"^--\S+$")
+_LOOKS_LIKE_FILE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+
+
+def _copy_sources(args_text: str) -> list[str]:
+    tokens = [t for t in args_text.split() if not _FLAG_TOKEN.match(t)]
+    if len(tokens) < 2:
+        return []  # malformed (no separate destination) - nothing to analyze here
+    return tokens[:-1]  # last token is the destination
+
+
+def _copy_enumerates_individual_files(content: str) -> bool:
+    """Heuristic backstop for the exact regression found live: a generated
+    Dockerfile's COPY listed index.html, styles.css, script.js explicitly
+    and silently omitted images/ (referenced by index.html), producing a
+    container serving a page with broken images. Flags a COPY with more
+    than one source, or a single source that looks like a specific file
+    (has an extension) rather than a directory - either shape risks
+    silently omitting whatever wasn't named. A heuristic, not a proof: a
+    genuinely single-file app's COPY would also match, hence annotate, not
+    block."""
+    for match in _COPY_INSTRUCTION.finditer(content):
+        sources = _copy_sources(match.group(1))
+        if len(sources) > 1:
+            return True
+        if len(sources) == 1 and sources[0] not in (".", "./") and _LOOKS_LIKE_FILE.search(sources[0]):
+            return True
+    return False
 
 
 def _referenced_base_images(content: str) -> list[str]:
@@ -234,6 +273,16 @@ def check_dockerfile_policy(content: str, *, allowed_base_images: frozenset[str]
                 reason="uses sed -i against a path under /etc/ - silently no-ops if the pattern doesn't "
                 "match (found live: a rootless conversion that never took effect, with no build or lint "
                 "failure) - verify it actually took effect"
+            )
+        )
+
+    if _copy_enumerates_individual_files(content):
+        findings.append(
+            Finding(
+                reason="COPY appears to enumerate individual files rather than copying a whole directory - "
+                "found live: a Dockerfile copying index.html/styles.css/script.js silently omitted images/ "
+                "referenced by index.html, producing a container serving a page with broken images - verify "
+                "nothing referenced by the app is missing"
             )
         )
 
