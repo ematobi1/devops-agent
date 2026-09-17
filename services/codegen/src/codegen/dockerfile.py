@@ -36,47 +36,100 @@ from pathlib import Path
 from .base_images import AppImagePolicy
 
 
-def build_copy_instructions_prompt(policy: AppImagePolicy) -> str:
+def build_generation_prompt(policy: AppImagePolicy) -> str:
+    """Builds the (sole) LLM prompt for a generation run. Branches on
+    policy.needs_install_step: the static-site case (no build step) asks
+    only for a COPY instruction, unchanged from the original single-block
+    prompt; a CLI-shaped app type also asks for the RUN install
+    instruction(s), since which package manifests exist and how they
+    depend on each other is genuine per-repo variance, exactly like COPY -
+    everything else in the Dockerfile is still operator policy, not a
+    generation decision."""
+    if not policy.needs_install_step:
+        return (
+            "You are a DevOps agent determining how to get a repository's "
+            "static site files into a Docker image. The Dockerfile's base "
+            "image, CMD, HEALTHCHECK, and EXPOSE are already fixed by operator "
+            f"policy - do not produce or repeat them. The image is {policy.image}.\n\n"
+            "Investigate the repository using only the read-only MCP tools "
+            "available to you. Identify the directory that contains the "
+            "site's complete set of static assets - usually the repository "
+            "root itself, unless the site's files live in a specific "
+            "subdirectory such as a build output folder. Do NOT enumerate "
+            "individual files: a real site references assets in "
+            "subdirectories (images/, css/, js/, fonts/, etc.) that you will "
+            "not see by looking only at top-level files, and a hand-picked "
+            "file list will silently omit them, producing a container that "
+            "serves a page with broken links. Produce a single COPY "
+            "instruction that copies the ENTIRE identified directory - every "
+            "file and subdirectory it contains - into the image, so nothing "
+            "the site references can be missing. Determine the correct "
+            "destination path for this base image and an appropriate --chown "
+            "form so the process (running as a non-root user in this image) "
+            "can read the copied files.\n\n"
+            "End your reply with only that single Dockerfile COPY instruction "
+            "- nothing else - in a fenced code block labeled dockerfile-copy:\n"
+            "```dockerfile-copy\n"
+            "...\n"
+            "```\n"
+            "Do not include FROM, CMD, HEALTHCHECK, EXPOSE, or any other "
+            "instruction, and do not list individual files - copy the whole "
+            "directory. Every line must be complete and correct as written - "
+            "no placeholders."
+        )
     return (
-        "You are a DevOps agent determining how to get a repository's "
-        "static site files into a Docker image. The Dockerfile's base "
-        "image, CMD, HEALTHCHECK, and EXPOSE are already fixed by operator "
-        f"policy - do not produce or repeat them. The image is {policy.image}.\n\n"
+        "You are a DevOps agent determining two things about a repository "
+        "so it can be packaged into a Docker image. The Dockerfile's base "
+        "image, CMD, WORKDIR, and any EXPOSE/HEALTHCHECK are already fixed "
+        f"by operator policy - do not produce or repeat them. The image is "
+        f"{policy.image}. The working directory inside the image is "
+        f"already set to {policy.workdir} - every RUN command you write "
+        "executes with that as its current directory, and every COPY "
+        "destination is relative to it too.\n\n"
         "Investigate the repository using only the read-only MCP tools "
-        "available to you. Identify the directory that contains the "
-        "site's complete set of static assets - usually the repository "
-        "root itself, unless the site's files live in a specific "
-        "subdirectory such as a build output folder. Do NOT enumerate "
-        "individual files: a real site references assets in "
-        "subdirectories (images/, css/, js/, fonts/, etc.) that you will "
-        "not see by looking only at top-level files, and a hand-picked "
-        "file list will silently omit them, producing a container that "
-        "serves a page with broken links. Produce a single COPY "
-        "instruction that copies the ENTIRE identified directory - every "
-        "file and subdirectory it contains - into the image, so nothing "
-        "the site references can be missing. Determine the correct "
-        "destination path for this base image and an appropriate --chown "
-        "form so the process (running as a non-root user in this image) "
-        "can read the copied files.\n\n"
-        "End your reply with only that single Dockerfile COPY instruction "
-        "- nothing else - in a fenced code block labeled dockerfile-copy:\n"
-        "```dockerfile-copy\n"
-        "...\n"
-        "```\n"
-        "Do not include FROM, CMD, HEALTHCHECK, EXPOSE, or any other "
-        "instruction, and do not list individual files - copy the whole "
-        "directory. Every line must be complete and correct as written - "
-        "no placeholders."
+        "available to you.\n\n"
+        "1. COPY: identify the directory containing the application's "
+        "complete source - usually the repository root. Do NOT enumerate "
+        "individual files or subdirectories: a hand-picked list will "
+        "silently omit something the app needs at run time. Produce a "
+        "single COPY instruction that copies the ENTIRE directory into "
+        f"the image at {policy.workdir}. Do not add a --chown - the "
+        "image's non-root user is created by a later, already-fixed "
+        "operator policy step, so a --chown here would target a user "
+        "that doesn't exist yet.\n\n"
+        "2. RUN (install): find every Python package manifest in the "
+        "repository (pyproject.toml, setup.py, setup.cfg, or "
+        "requirements*.txt - there may be more than one, e.g. a monorepo "
+        "of several installable packages) and produce the RUN "
+        "instruction(s) that install all of them inside the image, in "
+        "dependency order if one depends on another. Only reference paths "
+        "you actually found a manifest under, written as paths relative "
+        f"to {policy.workdir} (e.g. `pip install --no-cache-dir -e "
+        "./path/to/package`, not an absolute or `../` path) since that's "
+        "where your COPY instruction put the repository and where RUN "
+        "executes - not the repository's own root outside the image. "
+        "Never fetch a package, script, or index from a URL, and never "
+        "pipe a remote command into a shell.\n\n"
+        "End your reply with exactly two fenced code blocks, in this "
+        "order, and nothing else:\n"
+        "```dockerfile-copy\n...\n```\n"
+        "```dockerfile-run\n...\n```\n"
+        "The first must contain only the COPY instruction(s); the second "
+        "only the RUN instruction(s). No FROM, CMD, HEALTHCHECK, EXPOSE, "
+        "or explanatory text in either. Every line must be complete and "
+        "correct as written - no placeholders."
     )
 
 
 _FENCED_COPY_BLOCK = re.compile(r"```dockerfile-copy\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _COPY_LINE = re.compile(r"^\s*COPY\s", re.MULTILINE | re.IGNORECASE)
+_FENCED_RUN_BLOCK = re.compile(r"```dockerfile-run\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_INSTALL_RUN_LINE = re.compile(r"^\s*RUN\s", re.MULTILINE | re.IGNORECASE)
 
 
 def extract_copy_instructions(result_text: str) -> str | None:
     """Pulls the COPY instruction(s) out of a ```dockerfile-copy fenced
-    block, as required by build_copy_instructions_prompt(). Returns None if
+    block, as required by build_generation_prompt(). Returns None if
     no such block is present, or if it's present but contains no line that
     actually looks like a COPY instruction - either way the model didn't
     follow instructions and the caller should refuse rather than guess."""
@@ -89,19 +142,44 @@ def extract_copy_instructions(result_text: str) -> str | None:
     return content
 
 
-def render_dockerfile(policy: AppImagePolicy, copy_instructions: str) -> str:
+def extract_install_instructions(result_text: str) -> str | None:
+    """Pulls the RUN install instruction(s) out of a ```dockerfile-run
+    fenced block, as required by build_generation_prompt() when
+    policy.needs_install_step. Same refuse-rather-than-guess contract as
+    extract_copy_instructions()."""
+    match = _FENCED_RUN_BLOCK.search(result_text)
+    if match is None:
+        return None
+    content = match.group(1).strip("\n")
+    if not _INSTALL_RUN_LINE.search(content):
+        return None
+    return content
+
+
+def render_dockerfile(policy: AppImagePolicy, copy_instructions: str, install_instructions: str | None = None) -> str:
     """Deterministically assembles the final Dockerfile from the
-    operator-configured policy (FROM/EXPOSE/HEALTHCHECK/CMD - fixed, never
-    model-generated) and the model-generated COPY instruction(s), the only
-    part that legitimately varies per repo. Templating, not generation -
-    the same policy and copy_instructions always produce the same output."""
-    return (
-        f"FROM {policy.image}\n"
-        f"{copy_instructions.strip()}\n"
-        f"EXPOSE {policy.port}\n"
-        f"HEALTHCHECK {policy.healthcheck}\n"
-        f"CMD {policy.cmd}\n"
-    )
+    operator-configured policy (FROM/CMD always; EXPOSE/HEALTHCHECK only
+    when the policy sets them - fixed, never model-generated) and the
+    model-generated COPY (and, for a CLI-shaped app type, RUN install)
+    instructions - the only parts that legitimately vary per repo.
+    Templating, not generation - the same inputs always produce the same
+    output."""
+    lines = [f"FROM {policy.image}"]
+    if policy.workdir is not None:
+        lines.append(f"WORKDIR {policy.workdir}")
+    lines.append(copy_instructions.strip())
+    if install_instructions is not None:
+        lines.append(install_instructions.strip())
+    if policy.user is not None:
+        lines.append(f"RUN useradd --create-home {policy.user}")
+    if policy.port is not None:
+        lines.append(f"EXPOSE {policy.port}")
+    if policy.healthcheck is not None:
+        lines.append(f"HEALTHCHECK {policy.healthcheck}")
+    if policy.user is not None:
+        lines.append(f"USER {policy.user}")
+    lines.append(f"CMD {policy.cmd}")
+    return "\n".join(lines) + "\n"
 
 
 @dataclass(frozen=True)
@@ -189,6 +267,7 @@ _FULLY_PINNED_TAG = re.compile(r":(\d+\.\d+\.\d+)(-\S+)?$")
 _CMD_LINE = re.compile(r"^\s*CMD\s", re.MULTILINE | re.IGNORECASE)
 _HEALTHCHECK_BLOCK = re.compile(r"^[ \t]*HEALTHCHECK\b(?:.*\\\r?\n)*.*$", re.MULTILINE | re.IGNORECASE)
 _SED_ETC = re.compile(r"\bsed\b[^\n]*-i[^\n]*/etc/", re.IGNORECASE)
+_RUN_PIPE_TO_SHELL = re.compile(r"^\s*RUN\b.*\b(curl|wget)\b.*\|\s*(sh|bash|python[0-9.]*|sudo)\b", re.MULTILINE | re.IGNORECASE)
 _COPY_INSTRUCTION = re.compile(r"^\s*COPY\s+(.+)$", re.MULTILINE | re.IGNORECASE)
 _FLAG_TOKEN = re.compile(r"^--\S+$")
 _LOOKS_LIKE_FILE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -234,7 +313,7 @@ def _referenced_base_images(content: str) -> list[str]:
     return images
 
 
-def check_dockerfile_policy(content: str, *, allowed_base_images: frozenset[str]) -> list[Finding]:
+def check_dockerfile_policy(content: str, *, allowed_base_images: frozenset[str], expect_healthcheck: bool = True) -> list[Finding]:
     findings = []
 
     for image_ref in _referenced_base_images(content):
@@ -259,13 +338,23 @@ def check_dockerfile_policy(content: str, *, allowed_base_images: frozenset[str]
         findings.append(Finding(reason="no explicit CMD instruction present"))
 
     if healthcheck_match is None:
-        findings.append(Finding(reason="no HEALTHCHECK instruction present"))
+        if expect_healthcheck:
+            findings.append(Finding(reason="no HEALTHCHECK instruction present"))
     else:
         block = healthcheck_match.group(0)
         if "--retries" not in block:
             findings.append(Finding(reason="HEALTHCHECK is missing --retries"))
         if "--start-period" not in block:
             findings.append(Finding(reason="HEALTHCHECK is missing --start-period"))
+
+    if _RUN_PIPE_TO_SHELL.search(content):
+        findings.append(
+            Finding(
+                reason="RUN pipes a curl/wget download into a shell/interpreter - fetches an unpinned, "
+                "unreviewed remote script at build time rather than installing from a manifest already "
+                "in the image - verify this is actually necessary and pin what it fetches"
+            )
+        )
 
     if _SED_ETC.search(content):
         findings.append(

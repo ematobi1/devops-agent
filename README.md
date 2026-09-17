@@ -8,7 +8,7 @@ Claude Code is the agent runtime; GitHub/AWS integrations are official MCP
 servers, not custom adapters), and has the full validation history and every
 real bug/finding hit along the way.
 
-## Status (2026-09-13)
+## Status (2026-09-17)
 
 - **Diagnostic loop:** working end to end against real GitHub and real AWS
   CloudWatch. `scripts/diagnose.py` runs `orchestrator.run_task()`, verifies
@@ -28,8 +28,17 @@ real bug/finding hit along the way.
   a Dockerfile via Claude Code, lints it with `docker build --check`, then
   feeds the same approve/apply pipeline as any other proposal. Validated
   end to end on a plumbing level (correctly refuses to fabricate a
-  Dockerfile when a repo has no real app code); the happy path on a real
-  application repo isn't validated yet.
+  Dockerfile when a repo has no real app code). Now also supports a
+  CLI-shaped app type (`devops-agent-cli`, no listening port, a
+  `RUN`-install step, a non-root user templated after install) alongside
+  the original static-site type — see `services/codegen/README.md`
+  "Validated" for two real bugs this surfaced and fixed (a relative
+  install path resolving against the wrong `WORKDIR`; a `--chown` silently
+  no-op'ing against a user that didn't exist yet), both confirmed via a
+  real local `docker build` + `docker run`. The live, GitHub-backed
+  happy path (generate → lint → verify → approve → apply → real PR)
+  still isn't validated — needs a `GITHUB_PERSONAL_ACCESS_TOKEN` this
+  environment doesn't have configured.
 - **AWS apply:** not built — no concrete use case to build it against yet.
   See `docs/ARCHITECTURE.md`.
 

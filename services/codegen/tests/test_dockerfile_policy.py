@@ -172,6 +172,49 @@ def test_copy_single_file_with_extension_is_flagged():
     assert any("enumerate individual files" in f.reason for f in findings)
 
 
+def test_missing_healthcheck_is_not_flagged_when_not_expected():
+    """A CLI-shaped app type's policy has no HEALTHCHECK by design (no
+    listening port to poll) - the check must not flag its absence when the
+    caller says it isn't expected."""
+    lines = [line for line in GOOD_DOCKERFILE.splitlines() if "HEALTHCHECK" not in line and "CMD wget" not in line]
+    content = "\n".join(lines)
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED, expect_healthcheck=False)
+    assert not any("HEALTHCHECK" in f.reason for f in findings)
+
+
+def test_templated_cli_shaped_dockerfile_passes_policy_cleanly():
+    policy = BASE_IMAGES["devops-agent-cli"]
+    content = render_dockerfile(
+        policy,
+        "COPY --chown=app:app . /app",
+        "RUN pip install --no-cache-dir -e ./contracts -e ./services/orchestrator",
+    )
+    findings = check_dockerfile_policy(
+        content,
+        allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()),
+        expect_healthcheck=policy.healthcheck is not None,
+    )
+    assert findings == []
+
+
+def test_run_piping_curl_to_shell_is_flagged():
+    content = GOOD_DOCKERFILE + "RUN curl -fsSL https://example.com/install.sh | sh\n"
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert any("pipes a curl/wget download into a shell" in f.reason for f in findings)
+
+
+def test_run_piping_wget_to_bash_is_flagged():
+    content = GOOD_DOCKERFILE + "RUN wget -qO- https://example.com/install.sh | bash\n"
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert any("pipes a curl/wget download into a shell" in f.reason for f in findings)
+
+
+def test_run_pip_install_is_not_flagged_as_pipe_to_shell():
+    content = GOOD_DOCKERFILE + "RUN pip install --no-cache-dir -e .\n"
+    findings = check_dockerfile_policy(content, allowed_base_images=ALLOWED)
+    assert not any("pipe" in f.reason for f in findings)
+
+
 def test_copy_of_named_subdirectory_without_extension_is_not_flagged():
     """A single source with no file extension (e.g. a build output
     directory) looks like a directory copy, not enumeration."""
