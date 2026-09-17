@@ -30,6 +30,45 @@ clicking Approve on a run that includes `apply` (same two-token discipline
 one token with both scopes works fine, as validated live in this repo's
 own PR #1).
 
+## Run it in a container
+
+`ui/Dockerfile` builds a real, correctly-shaped image for this app - a
+Python/FastAPI backend serving both `/static` and `/api`, not a
+static-file-only image (nginx alone has no backend behind it and every
+`/api/*` call would 404 - see the git history around 2026-09-17 if a
+Dockerfile proposing exactly that shows up again). Build context is the
+**repo root**, not `ui/` - the app needs the whole monorepo:
+
+```
+docker build -f ui/Dockerfile -t devops-agent-ui .
+docker run --rm -p 8000:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> \
+  devops-agent-ui
+```
+
+The Docker socket mount is required, not optional: the generate stage
+shells out to `docker build --check` (see `services/codegen/dockerfile.py`),
+and that needs a real daemon. This container carries only the `docker`
+CLI and the `buildx` plugin (no daemon of its own - Docker-outside-of-
+Docker, talking to the *host's* daemon, not Docker-in-Docker) - **both
+are required**: the bare CLI alone exits 125 with no usable output on
+`--check`, since that flag is implemented by `buildx`, not the classic
+builder the CLI falls back to without it. Found live building this image
+the same way every other real bug in this project was found - by
+actually running it, not just `docker build --check`ing the Dockerfile
+itself.
+
+Runs as root inside the container, deliberately - see the Dockerfile's
+own comment for why a non-root `USER` here would add real,
+host-GID-dependent brittleness for no actual security benefit once the
+host's Docker socket is already mounted.
+
+If `-v /var/run/docker.sock:...` gets silently rewritten to a Windows
+path and the container fails to start, that's Git Bash's MSYS path
+conversion, not Docker - prefix the command with `MSYS_NO_PATHCONV=1` (or
+run from PowerShell/cmd instead, which doesn't do this).
+
 ## Deviations from the spec (read before assuming a UI field means what it looks like)
 
 The build prompt for this UI assumed a shape for the underlying pipeline

@@ -97,6 +97,15 @@ export GITHUB_PERSONAL_ACCESS_TOKEN=<your fine-grained PAT>
 .venv/Scripts/python -m uvicorn ui.app:app --host 127.0.0.1 --port 8000
 ```
 
+Or in a container - see `ui/README.md` "Run it in a container" for why
+the Docker socket mount isn't optional:
+
+```
+docker build -f ui/Dockerfile -t devops-agent-ui .
+docker run --rm -p 8000:8000 -v /var/run/docker.sock:/var/run/docker.sock \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> devops-agent-ui
+```
+
 ## Manual scripts (cost real money, need secrets configured)
 
 ```

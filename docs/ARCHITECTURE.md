@@ -492,3 +492,54 @@ it, the same way the Dockerfile base-image/CMD/HEALTHCHECK regressions
 were only found by a 6-run and a 4-run sample — do not assume one clean
 run means the pattern is safe; (4) only then consider an apply path, and
 only after deciding what "undo" means for that target.
+
+## `ui/Dockerfile` — a real Dockerfile for the UI itself, and a fourth real bug (2026-09-17)
+
+A Dockerfile was proposed for `ui/` shaped like `codegen`'s `static-site`
+policy (nginx serving `ui/static/` alone). Flagged and not applied: the
+frontend calls same-origin `/api/*` routes the FastAPI backend serves —
+nginx alone has no backend behind it, so every button would 404. `ui/` is
+a Python/FastAPI app, not a static site; neither existing `BASE_IMAGES`
+entry fits it (`static-site` has no backend; `devops-agent-cli` has no
+`EXPOSE`/`HEALTHCHECK` and isn't a long-running service) - and it needs
+something neither entry's templating supports at all: a real Docker
+daemon reachable from inside the container, since the generate stage
+shells out to `docker build --check`.
+
+Hand-written (not run through `codegen` - this containerizes `codegen`
+itself, not a target `codegen` generates for) as `ui/Dockerfile`, and
+validated the same way everything else in this document was: by actually
+building and running it, not just `--check`ing it.
+
+**A fourth real bug, same discipline as bugs 1–3 above:** `docker build
+--check` failed inside the container with exit 125 and no usable output,
+even though basic `docker` commands (e.g. `docker version`) worked fine
+against the host daemon over the mounted socket. Root cause: `--check` is
+implemented by the `buildx` CLI plugin, not the classic builder the bare
+`docker` CLI falls back to without it — `docker:29.8.1-cli` (CLI only, no
+daemon, chosen over `apt-get install docker.io` which pulls in a full
+unused engine) doesn't include that plugin. Fixed by also copying the
+`buildx` binary from `docker/buildx-bin:0.37.1` into
+`/usr/local/lib/docker/cli-plugins/docker-buildx`. Re-verified live after
+the fix: `codegen.lint_dockerfile()`, called from inside the running
+container against the mounted host socket, returned a clean result
+(`[]`) — the exact function `scripts/generate_dockerfile.py` calls,
+proving the fix at the level that actually matters, not just that
+`docker version` succeeds.
+
+**Design choice, not an oversight:** the container runs as root, with no
+`USER` instruction — the one case so far where this project's own
+non-root discipline (nginx-unprivileged for static-site; a templated
+`useradd`+`USER` for devops-agent-cli) doesn't apply. Mounting the host's
+Docker socket already grants whoever holds it root-equivalent control of
+the host machine; adding a non-root `USER` inside the container would add
+real complexity (the container's user needs a GID matching the socket's
+group ownership, which varies by host and doesn't hold consistently
+across Docker Desktop's Windows/Mac proxy vs. native Linux) for no actual
+security benefit once that's already true. Fits the same no-auth,
+localhost-only threat model `ui/README.md` "Security" already documents.
+
+A `.dockerignore` was added at the repo root alongside this (excludes
+`.venv/`, `.git/`, caches, `ui/.runs/`) - it also improves the existing
+root `Dockerfile` (from the devops-agent-cli happy-path validation above),
+which had been building without one.
