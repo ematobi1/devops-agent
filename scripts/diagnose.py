@@ -41,6 +41,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
+    # See scripts/apply.py's identical fix (2026-09-17): printing
+    # Claude-generated text (summary/instructions below) can crash with
+    # UnicodeEncodeError under cp1252, Windows' console codepage default
+    # even for redirected stdout.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) != 3:
         print(f"usage: {sys.argv[0]} <approvals.jsonl> '<task description>'", file=sys.stderr)
         raise SystemExit(1)

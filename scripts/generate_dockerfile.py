@@ -67,6 +67,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
+    # See scripts/apply.py's identical fix (2026-09-17) for why: printing
+    # Claude-generated text can crash with UnicodeEncodeError under
+    # cp1252, Windows' console codepage default even for redirected
+    # stdout - this script's own failure-path dumps of run_result.result_text
+    # are exposed to the same risk.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) != 4:
         print(f"usage: {sys.argv[0]} <approvals.jsonl> <owner/repo> <app-type>", file=sys.stderr)
         print(f"configured app types: {sorted(BASE_IMAGES)}", file=sys.stderr)

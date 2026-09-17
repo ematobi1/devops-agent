@@ -53,6 +53,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
+    # Real bug found live (2026-09-17, via the ui/ web frontend piping this
+    # script's stdout - a redirected-stdout execution mode the interactive
+    # CLI never exercised): printing Claude-generated text containing a
+    # character outside cp1252 (Windows' default console codepage, used
+    # even when stdout isn't a real console) crashes with
+    # UnicodeEncodeError, right after a real apply already ran - the same
+    # class of bug already fixed once for the *decoding* side of a
+    # subprocess boundary (claude_runner.py, see docs/ARCHITECTURE.md
+    # "Apply step end-to-end validation"), never fixed for this script's
+    # own *encoding* side until now.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) != 4:
         print(f"usage: {sys.argv[0]} <approvals.jsonl> <approval-id> <changes.jsonl>", file=sys.stderr)
         raise SystemExit(1)
