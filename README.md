@@ -26,19 +26,21 @@ real bug/finding hit along the way.
   nothing — structural checks only, doesn't judge intent.
 - **Codegen (v1, Dockerfiles):** `scripts/generate_dockerfile.py` generates
   a Dockerfile via Claude Code, lints it with `docker build --check`, then
-  feeds the same approve/apply pipeline as any other proposal. Validated
-  end to end on a plumbing level (correctly refuses to fabricate a
-  Dockerfile when a repo has no real app code). Now also supports a
-  CLI-shaped app type (`devops-agent-cli`, no listening port, a
+  feeds the same approve/apply pipeline as any other proposal. Now
+  supports a CLI-shaped app type (`devops-agent-cli`: no listening port, a
   `RUN`-install step, a non-root user templated after install) alongside
-  the original static-site type — see `services/codegen/README.md`
-  "Validated" for two real bugs this surfaced and fixed (a relative
-  install path resolving against the wrong `WORKDIR`; a `--chown` silently
-  no-op'ing against a user that didn't exist yet), both confirmed via a
-  real local `docker build` + `docker run`. The live, GitHub-backed
-  happy path (generate → lint → verify → approve → apply → real PR)
-  still isn't validated — needs a `GITHUB_PERSONAL_ACCESS_TOKEN` this
-  environment doesn't have configured.
+  the original static-site type. **Full happy path validated live
+  (2026-09-17)** end to end against `ematobi1/devops-agent` itself:
+  generate → lint clean → zero warnings → approve → apply → real PR
+  ([#1](https://github.com/ematobi1/devops-agent/pull/1)) →
+  post-apply diff verification, plus an independent real `docker build` +
+  `docker run` of the model's own generated Dockerfile (non-root, all
+  packages import, correct `CMD` behavior). See
+  `services/codegen/README.md` "Validated" for two real bugs a manual
+  `docker build`/`docker run` sanity check (lint/policy checks alone don't
+  execute anything) caught and fixed before that live run: a relative
+  install path resolving against the wrong `WORKDIR`, and a `--chown`
+  silently no-op'ing against a user that didn't exist yet.
 - **AWS apply:** not built — no concrete use case to build it against yet.
   See `docs/ARCHITECTURE.md`.
 

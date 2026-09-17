@@ -151,7 +151,19 @@ asked to produce a `--chown` for this app type at all). Both real
 `codegen`'s tests plus a manual `render_dockerfile()` + `docker build`
 against this repo.
 
-Not yet validated: an actual live Claude Code generation run against a
-real GitHub-hosted target (needs a configured `GITHUB_PERSONAL_ACCESS_TOKEN`
-— not yet supplied in this environment), and the full path through
-`decide.py`/`apply.py` to an applied PR.
+**Full happy path validated live (2026-09-17), target `ematobi1/devops-agent`
+itself:** generate (real Claude Code run, $0.1536, read-only PAT) → lint
+clean → zero verifier/policy warnings → approve (`decide.py`) → apply
+(`apply.py`, write-scoped PAT) → real PR
+([#1](https://github.com/ematobi1/devops-agent/pull/1)) → `verify_apply.py`
+(no structural issues) → diff read manually, matches exactly. The model's
+own generated Dockerfile (not a hand-written approximation) was also
+independently confirmed correct with a real `docker build` + `docker run`
+before approving: builds clean, all 5 packages import, container runs as
+uid 1000 (`app`), `CMD` produces the expected usage message with no args.
+Zero code changes were needed after the two bugs above were fixed — the
+model chose a different (also correct) instruction order than the earlier
+manual sanity check (`contracts` → `verifier` → `codegen` → `approval` →
+`orchestrator`, one `RUN` with `&&`-chained installs rather than five
+separate `RUN`s), both equally valid since no installed package here
+depends on a sibling package not yet installed earlier in the chain.
