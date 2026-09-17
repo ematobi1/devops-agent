@@ -138,9 +138,11 @@ Lowest priority, no reason to design now. When it's time: OS-level STT/TTS (or a
 
 ## Explicitly not built yet (next real increment, not this one)
 
-- **`services/verifier`, `services/codegen`.** No concrete IaC-generation or pre-apply-verification use case exists yet to build these against.
+- **An AWS write path.** AWS CloudWatch integration is read-only by design (see "Apply step — scope" below) — no concrete use case to build a write path against yet.
 - **Vault/Secrets Manager integration.** See decision #3 above.
 - **Voice (Phase 8).** Explicitly deferred in the original doc section below; nothing changed that.
+
+(`services/verifier` and `services/codegen` were built and are validated — see their own sections below and `services/codegen/README.md` "Validated" for the live-tested Dockerfile happy path, 2026-09-17.)
 
 ## GitHub end-to-end validation (2026-09-13) — passed
 
@@ -318,3 +320,22 @@ Two genuinely different approaches exist for real completeness verification, nei
 2. **Dynamic verification.** Actually build the image (not just `--check`) and run it, then crawl the exposed port for 404s against whatever the entry page references. Tests real end-to-end behavior, not an inference from source, at the cost of an actual build+run+network round trip per candidate Dockerfile.
 
 Neither is scoped or built. Worth deciding between them (or whether either is worth the cost) before generating anything with a real build step or a deeper asset graph than a flat static site — a compiled app, a framework with its own asset pipeline, or anything where "copy everything" stops being the obviously-correct default.
+
+## CLI-shaped app type, and the full happy path finally validated live (2026-09-17)
+
+The remaining gap from the previous section — "anything where 'copy everything' stops being the obviously-correct default" — arrived immediately: the operator picked `ematobi1/devops-agent` itself as the target, a 5-package monorepo (`contracts` + 4 `services/*`, each with its own `pyproject.toml`, no root requirements file) with no HTTP server at all, just CLI scripts. Neither existing assumption held: `static-site`'s policy is service-shaped (`EXPOSE`/HTTP `HEALTHCHECK`, zero build step), and this repo is CLI-shaped (no port, and genuinely needs a build step — installing five local packages — which the templating had no slot for at all).
+
+**Design decisions, in order of how the gap was found:**
+
+1. `AppImagePolicy.healthcheck`/`.port` became optional — a CLI app has no listening port to poll; forcing an HTTP `HEALTHCHECK` against one would template a meaningless instruction. `render_dockerfile()` omits the line rather than emitting a broken one.
+2. A second generation capability, `needs_install_step`, was added alongside `COPY`: a two-block prompt (`\`\`\`dockerfile-copy` + `\`\`\`dockerfile-run`) asks the model for install instructions too, since which package manifests exist and how they relate is genuine per-repo variance, same reasoning as `COPY` itself.
+3. A new app-type entry, `devops-agent-cli`, was added **scoped to this repo specifically** (`cmd=["python", "scripts/diagnose.py"]`), not as a generic "any Python CLI app" claim the way `static-site` genuinely is generic for any nginx-served site — a CLI app's entrypoint script is inherently repo-specific, and reusing this entry for a different CLI repo would silently run the wrong script.
+
+**Two more real bugs, found the same way bug 4 (above) was found — by actually building and running the image, which `docker build --check` and the policy checks both cannot do, since neither executes anything:**
+
+- **Bug 5:** a plausible model-style `RUN pip install -e ./contracts` resolves relative to Docker's default `/` working directory, not wherever `COPY` put the files — silently fails at real `docker build` time with no signal from `--check` or policy. Fixed by making `workdir` operator policy too (`WORKDIR` templated, matching the fixed `COPY` destination the prompt now specifies), and `AppImagePolicy.__post_init__` now raises immediately if `needs_install_step=True` without a `workdir` — this can't silently regress into the same bug for a future CLI-shaped type.
+- **Bug 6:** `python:slim` (unlike `nginx-unprivileged`, chosen specifically for its built-in non-root user — see the base-image fix above) ships no non-root user at all. A model-style `COPY --chown=app:app` silently no-op'd against a user that didn't exist yet, and the container ran as **root** with zero lint or policy findings. Fixed by making privilege drop operator policy for this type too (`user`): `render_dockerfile()` now templates `RUN useradd` + `USER` *after* the install step (which needs root to write into the image's system Python) and *before* `CMD`, and the prompt no longer asks the model for a `--chown` on this app type at all, closing the gap at its source rather than only backstopping it.
+
+**Full pipeline then run for real, live, no shortcuts:** `generate_dockerfile.py` against the real GitHub repo ($0.1536, read-only PAT) → lint clean, zero verifier/policy warnings → the model's own generated Dockerfile independently confirmed with a real `docker build` + `docker run` (non-root uid 1000, all 5 packages import cleanly, correct `CMD` behavior) *before* approving → `decide.py` approve → `apply.py` (write-scoped PAT) → real PR opened (`ematobi1/devops-agent#1`) → `verify_apply.py` clean → diff read manually, matched exactly → merged → pulled locally → rebuilt and relaunched from the actual merged file, same result. Zero code changes were needed once bugs 5 and 6 were fixed — the model chose a different (also correct) install order than the manual sanity-check Dockerfile that surfaced the bugs.
+
+This closes the "not yet validated: a fresh sample against the fully-templated pipeline... and the full path through to an applied PR" note from the previous section, and the "AWS apply: not built" line above is now the only remaining item from the original Phase 1 gap list — everything else that section named is built and live-validated.
