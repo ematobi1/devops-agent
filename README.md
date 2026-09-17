@@ -82,6 +82,21 @@ export AWS_REGION=...
 .venv/Scripts/python scripts/verify_apply.py <changes.jsonl> <approval-id>
 ```
 
+## Web UI (optional)
+
+`ui/` is a thin local FastAPI/vanilla-JS front end over the same pipeline
+scripts below - generate/lint/verify, an explicit browser Approve step,
+apply, live via SSE. It invokes the real scripts as subprocesses; it does
+not reimplement any pipeline logic. See `ui/README.md`, including its
+"Deviations from the spec" section on where the original build prompt's
+assumptions didn't match this pipeline's actual shape.
+
+```
+.venv/Scripts/python -m pip install -r ui/requirements.txt   # once
+export GITHUB_PERSONAL_ACCESS_TOKEN=<your fine-grained PAT>
+.venv/Scripts/python -m uvicorn ui.app:app --host 127.0.0.1 --port 8000
+```
+
 ## Manual scripts (cost real money, need secrets configured)
 
 ```

@@ -21,6 +21,13 @@ from approval import ApprovalStore
 
 
 def main() -> None:
+    # See scripts/apply.py's identical fix (2026-09-17): the
+    # verifier_warnings printed below are derived from Claude-generated
+    # text and can crash with UnicodeEncodeError under cp1252, Windows'
+    # console codepage default even for redirected stdout.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) != 5 or sys.argv[3] not in ("approve", "reject"):
         print(f"usage: {sys.argv[0]} <approvals.jsonl> <approval-id> approve|reject <decided-by>", file=sys.stderr)
         raise SystemExit(1)

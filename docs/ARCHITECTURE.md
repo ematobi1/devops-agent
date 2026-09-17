@@ -339,3 +339,59 @@ The remaining gap from the previous section — "anything where 'copy everything
 **Full pipeline then run for real, live, no shortcuts:** `generate_dockerfile.py` against the real GitHub repo ($0.1536, read-only PAT) → lint clean, zero verifier/policy warnings → the model's own generated Dockerfile independently confirmed with a real `docker build` + `docker run` (non-root uid 1000, all 5 packages import cleanly, correct `CMD` behavior) *before* approving → `decide.py` approve → `apply.py` (write-scoped PAT) → real PR opened (`ematobi1/devops-agent#1`) → `verify_apply.py` clean → diff read manually, matched exactly → merged → pulled locally → rebuilt and relaunched from the actual merged file, same result. Zero code changes were needed once bugs 5 and 6 were fixed — the model chose a different (also correct) install order than the manual sanity-check Dockerfile that surfaced the bugs.
 
 This closes the "not yet validated: a fresh sample against the fully-templated pipeline... and the full path through to an applied PR" note from the previous section, and the "AWS apply: not built" line above is now the only remaining item from the original Phase 1 gap list — everything else that section named is built and live-validated.
+
+## `ui/` web frontend, and a real cross-platform bug it surfaced (2026-09-17)
+
+A thin FastAPI/vanilla-JS local UI (`ui/`) was added over the same
+pipeline scripts — `subprocess.run()` wrappers plus stdout parsing, no
+pipeline logic duplicated. See `ui/README.md`'s own "Deviations from the
+spec" section for six places its build prompt assumed a pipeline shape
+(separate lint/verify scripts, a `--repo`/`--app-type` flag CLI, an
+auto-apply-on-checkbox flow, a local-filesystem `repo_path`) that didn't
+match what's actually in this repo, and how each was reconciled against
+the real thing rather than guessed.
+
+**A real, previously-latent bug, found only because the UI exercises a
+new execution mode:** running the full pipeline live through the browser
+against `ematobi1/kreative-website` (a genuine, never-before-touched
+static-site target — chosen after `ematobi1/devops-agent` correctly
+self-refused a second identical-content PR, see below) crashed
+`scripts/apply.py` with `UnicodeEncodeError` on its own final
+`print(outcome.run_result.result_text)`, mid-way through a real,
+already-executed apply. Root cause: on Windows, `print()` to a *piped*
+stdout (subprocess capture — the UI's execution mode; never exercised by
+the interactive CLI's own runs) still encodes using the console's cp1252
+codepage by default, not UTF-8, and the run's result text contained a
+character (`→`) outside it. This is the same class of bug already fixed
+once in this project (`claude_runner.py`'s *decoding* of a subprocess's
+stdout, see "Apply step end-to-end validation" above) — never fixed for
+a script's own *encoding* of its output until now. Fixed identically in
+every script that prints Claude-generated text
+(`apply.py`, `generate_dockerfile.py`, `diagnose.py`, `decide.py`,
+`smoke_test.py`, `smoke_test_aws.py`): `sys.stdout.reconfigure(encoding="utf-8",
+errors="replace")` / same for `stderr`, first line of `main()`.
+Re-verified live after the fix: the next real attempt against the same
+target produced a clean, readable error (a genuine `403` — see below),
+not a crash.
+
+**Two more live outcomes, both correct behavior, not bugs:**
+
+- Against `ematobi1/devops-agent` (`devops-agent-cli`), the model
+  independently discovered the `Dockerfile` already existed with
+  byte-identical content (from the earlier session's merge) and refused
+  to fabricate a no-op PR, explicitly asking for guidance instead of
+  improvising. `apply.py`'s own outcome-contradiction check (no PR URL in
+  a claimed-"applied" result — see "Fresh sample clean" above) correctly
+  downgraded this to `failed_verification` rather than a false success.
+- Against `ematobi1/kreative-website`, generate/lint/verify succeeded
+  (read scope was granted), but apply correctly reported a real `403 -
+  Resource not accessible by personal access token` when write scope
+  wasn't — exactly the "surface the exact error, don't swallow it"
+  behavior the UI's own spec called for, proven with a genuine permission
+  gap rather than a synthetic one.
+
+Both are additional live proof of behavior already designed and tested
+earlier in this document (the outcome-contradiction check; verifier
+findings annotate, never block) — recorded here because they happened to
+be *found* by this session's UI testing, not because anything changed
+about how they work.

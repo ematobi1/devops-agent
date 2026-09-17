@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dockerfile Codegen</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Dockerfile Codegen</h1>
+      <p class="subtitle">
+        A thin UI over the existing pipeline: <code>scripts/generate_dockerfile.py</code> &rarr;
+        <code>scripts/decide.py</code> &rarr; <code>scripts/apply.py</code>. Nothing here recomputes
+        what those scripts already do.
+      </p>
+    </header>
+
+    <section class="panel">
+      <form id="run-form">
+        <div class="field">
+          <label for="repo">Target GitHub repo (owner/repo)</label>
+          <input type="text" id="repo" name="repo" placeholder="ematobi1/devops-agent" required />
+          <small>
+            This is a remote GitHub API target, not a local filesystem path &mdash; the pipeline
+            investigates the repo over the GitHub MCP server, it never reads local files.
+          </small>
+        </div>
+
+        <div class="field">
+          <label for="app-type">App type</label>
+          <select id="app-type" name="app-type" required></select>
+          <small>Loaded live from <code>codegen.BASE_IMAGES</code> &mdash; never hardcoded.</small>
+        </div>
+
+        <div class="field">
+          <label>Stages</label>
+          <div class="stage-checks" id="stage-checks">
+            <label><input type="checkbox" value="generate" checked disabled /> generate</label>
+            <label><input type="checkbox" value="lint" checked disabled /> lint</label>
+            <label><input type="checkbox" value="verify" checked disabled /> verify</label>
+            <label><input type="checkbox" value="approve" checked /> approve</label>
+            <label><input type="checkbox" value="apply" checked /> apply</label>
+          </div>
+          <small>
+            generate/lint/verify always run together &mdash; they're one Claude Code run in the
+            real script, not three separate ones (see the README). apply requires approve.
+          </small>
+        </div>
+
+        <button type="submit" class="btn-primary" id="run-btn">Run</button>
+      </form>
+    </section>
+
+    <section class="panel" id="progress-panel" hidden>
+      <div id="stages"></div>
+
+      <div class="panel" id="approve-panel" hidden style="margin-top: 14px;">
+        <p><strong>Generated Dockerfile is ready for review.</strong> Nothing is applied until you approve.</p>
+        <button class="btn-approve" id="approve-btn">Approve &amp; continue</button>
+      </div>
+
+      <div class="result-banner" id="result-banner"></div>
+
+      <button class="btn-secondary" id="retry-btn" hidden style="margin-top: 10px;">
+        Retry from failed stage
+      </button>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
