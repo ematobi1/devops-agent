@@ -395,3 +395,100 @@ earlier in this document (the outcome-contradiction check; verifier
 findings annotate, never block) — recorded here because they happened to
 be *found* by this session's UI testing, not because anything changed
 about how they work.
+
+## Kubernetes/Terraform codegen scaffolding (2026-09-17) — explicitly not fully implemented
+
+Requested as a deliberate exception to this project's own build-against-
+something-real discipline: policy dataclasses and their deterministic
+checkers only, sketched and documented, with no generation prompt, no
+script, and no orchestrator wiring — because there is no real cluster or
+Terraform-managed target to validate any of that against yet, the same
+reason `K8S_POLICIES`/`TERRAFORM_POLICIES` are deliberately empty tables
+rather than a first speculative entry (a tripwire test on each asserts
+this — see `services/codegen/tests/test_kubernetes_policy.py`/
+`test_terraform_policy.py`). Every real fix in the Dockerfile codegen
+history above came from testing against something real; building the
+generation/orchestrator layer for these two before a real target exists
+would be exactly the kind of speculative work that history argues
+against. Do not add a script or a generation prompt for either until a
+concrete target shows up — extend the pattern below against that target,
+the same way `devops-agent-cli` was added against a real repo rather than
+a hypothetical "any Python CLI app."
+
+**What's real:** `services/codegen/src/codegen/kubernetes_policy.py` and
+`terraform_policy.py` — `KubernetesManifestPolicy`/`TerraformConfigPolicy`
+dataclasses (the same operator-fixes-what-shouldn't-vary split as
+`AppImagePolicy`: allowed resource kinds/types, required `apiVersion` per
+kind, namespace, required labels/tags, pull policy, whether resource
+limits are mandatory, a required Terraform provider, hardcoded-secret
+detection) and `check_manifest_policy()`/`check_terraform_policy()` —
+ordinary, tested, deterministic Python, ready to use. Kubernetes
+validation parses real YAML (PyYAML — genuinely structured data, unlike a
+Dockerfile); Terraform validation is regex-based like
+`codegen.dockerfile`'s own Dockerfile checks, not a full HCL parser (no
+real `.tf` file exists yet to prove a heavier dependency is even
+warranted).
+
+**What a generation prompt would eventually narrow the model to** (not
+built): the same "operator policy templates everything that shouldn't
+vary, the model fills in only what genuinely varies per target" shape as
+`build_generation_prompt()` — for Kubernetes: resource name, container
+image reference/tag, replica count, container port, env var *names* (never
+secret values); for Terraform: resource names/arguments specific to the
+target, never provider blocks, never tag policy, never anything that
+should come from `required_tags`/`allowed_resource_types`.
+
+**Sketch of the integration points** (prose only — nothing below exists
+in code, and none of it should until a real target justifies it):
+
+- **Diagnostics** (`orchestrator`/`scripts/diagnose.py`): would need a
+  narrow, separate system prompt (like `build_generation_prompt()`, not a
+  reuse of the numbered-action-list `SYSTEM_PROMPT`) asking the model to
+  identify a *concrete* Kubernetes/Terraform opportunity or problem in a
+  target repo/cluster — mirrors how `generate_dockerfile.py` doesn't reuse
+  `run_task()` because its extraction shape doesn't fit a single
+  multi-line artifact.
+- **Decision** (`ApprovalRequest.proposed_actions`): a proposal to
+  generate or modify a manifest/config would carry the same
+  `{instruction, payload}` shape codegen already uses for a Dockerfile —
+  `payload` is the raw artifact content, never prose-scanned by
+  `verifier.check_proposed_actions()` (same reasoning as the Dockerfile
+  false-positive fix above).
+- **Verification**: `check_manifest_policy()`/`check_terraform_policy()`
+  (built, see above) would run the same way `check_dockerfile_policy()`
+  does today — against the *final assembled* artifact, annotating rather
+  than blocking. A real dry-run check (`kubectl apply --dry-run=server`
+  against a real cluster context; `terraform validate`/`terraform plan`
+  against a real backend) is a different, heavier class of check than
+  anything built so far — it needs live access to the target, the same
+  way `docker build --check` needs a running Docker daemon — and should
+  follow the same discipline as `lint_dockerfile()`: real tool, real
+  process, real captured output parsed deterministically, never
+  reimplemented.
+- **Apply**: `orchestrator.apply_approved()` is already integration-
+  agnostic (see "Apply step — scope" above) — a Kubernetes/Terraform apply
+  path is a new caller script with its own credential/tool scoping
+  (analogous to `scripts/apply.py`'s `GITHUB_WRITE_TOOLS`), not a change
+  to `apply_approved()` itself. What "applying" even means differs by
+  target in a way GitHub's create-branch/open-PR shape doesn't: a
+  Kubernetes apply is a live cluster mutation with no PR-shaped undo (see
+  "Not built, not scoped, not needed yet" above re: no rollback
+  mechanism), and a Terraform apply changes real infrastructure state —
+  both are meaningfully higher-blast-radius than a GitHub PR, and neither
+  should be built without first deciding, against a real target, what the
+  equivalent of "close the PR" is when something needs to be undone.
+
+**How to fully implement, when a real target exists:** (1) add one
+`K8S_POLICIES`/`TERRAFORM_POLICIES` entry modeled on that real target,
+the same way `devops-agent-cli` was added against `ematobi1/devops-agent`
+— delete the "deliberately empty" tripwire test for the type you're
+adding; (2) write the narrow generation prompt and a
+`scripts/generate_k8s_manifest.py`/`generate_terraform_config.py`
+following `generate_dockerfile.py`'s shape exactly (template what
+shouldn't vary, ask the model only for what does, assemble
+deterministically, lint/check before persisting an `ApprovalRequest`);
+(3) sample multiple real generations against that target before trusting
+it, the same way the Dockerfile base-image/CMD/HEALTHCHECK regressions
+were only found by a 6-run and a 4-run sample — do not assume one clean
+run means the pattern is safe; (4) only then consider an apply path, and
+only after deciding what "undo" means for that target.
