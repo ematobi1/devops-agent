@@ -5,6 +5,14 @@ deterministically before anything is proposed for approval. v1 scope:
 Dockerfiles only, chosen by the operator when asked what the concrete need
 was (see `docs/ARCHITECTURE.md` "services/codegen — scope").
 
+`kubernetes_policy.py`/`terraform_policy.py` (below) are **scaffolding**,
+not v1 or v2 scope — policy dataclasses and deterministic checkers only,
+no generation prompt, no script, no orchestrator wiring. See
+`docs/ARCHITECTURE.md` "Kubernetes/Terraform codegen scaffolding" before
+building on either: there's no real target to validate against yet, and
+this project's own history is that every real fix came from testing
+against something real, not from building ahead of it.
+
 ## Modules
 
 - `base_images.py`:
@@ -84,6 +92,31 @@ was (see `docs/ARCHITECTURE.md` "services/codegen — scope").
     `FROM`/`CMD`/`HEALTHCHECK` are templated — it now asserts the
     templating worked, not that the model remembered. All annotate rather
     than block.
+
+- `kubernetes_policy.py` (**scaffolding** — see the note at the top of
+  this README):
+  - `KubernetesManifestPolicy` — `allowed_kinds`, `api_versions` (per
+    kind), `namespace`, `required_labels`, `image_pull_policy`,
+    `require_resource_limits`. Same split as `AppImagePolicy`: whatever
+    shouldn't vary per manifest is policy.
+  - `K8S_POLICIES` — deliberately empty; a tripwire test enforces this
+    until a real target justifies a first entry.
+  - `check_manifest_policy(manifest_yaml, *, policy)` — real YAML parsing
+    (PyYAML), checks kind/apiVersion/namespace/labels/pull-policy/resource-
+    limits against `policy`. Tested against hand-written manifests only —
+    never against a real generated one or a real cluster.
+
+- `terraform_policy.py` (**scaffolding** — see the note at the top of
+  this README):
+  - `TerraformConfigPolicy` — `allowed_resource_types`,
+    `required_provider`, `required_tags`, `disallow_hardcoded_secrets`.
+  - `TERRAFORM_POLICIES` — deliberately empty, same tripwire pattern.
+  - `check_terraform_policy(config_text, *, policy)` — regex-based (like
+    `check_dockerfile_policy`, not a full HCL parser — no real `.tf` file
+    exists yet to justify one): resource-type allowlist, required
+    provider block, a literal-string heuristic for hardcoded secrets
+    (an interpolated reference like `"${var.x}"` is not flagged), required
+    tag keys. Tested against hand-written configs only.
 
 ## Why `docker build --check`, not `hadolint`
 
