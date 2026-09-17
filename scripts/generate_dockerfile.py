@@ -1,10 +1,12 @@
-"""Generates a Dockerfile for a GitHub repo: templates FROM/CMD/HEALTHCHECK/
-EXPOSE deterministically from operator policy, asks a read-only Claude Code
-run only for the part that varies per repo (COPY instructions), lints the
-assembled result via `docker build --check`, checks it against deterministic
-architectural/security policy invariants, and persists an ApprovalRequest -
-refusing only on generation failure or a real lint error; policy and prose
-findings are attached and persisted, not blocking.
+"""Generates a Dockerfile for a GitHub repo: templates FROM/CMD (and
+EXPOSE/HEALTHCHECK when the app type has them) deterministically from
+operator policy, asks a read-only Claude Code run only for the part(s)
+that vary per repo (COPY, and RUN install instructions for a CLI-shaped
+app type), lints the assembled result via `docker build --check`, checks
+it against deterministic architectural/security policy invariants, and
+persists an ApprovalRequest - refusing only on generation failure or a
+real lint error; policy and prose findings are attached and persisted,
+not blocking.
 
 Base image, CMD, and HEALTHCHECK are CONFIG INPUTS (codegen.BASE_IMAGES),
 not generation decisions - see codegen/base_images.py for why: a sample of
@@ -19,6 +21,12 @@ problem, run against the final assembled Dockerfile even though FROM/CMD/
 HEALTHCHECK are templated now - it asserts the templating worked, not that
 the model remembered.
 
+EXPOSE/HEALTHCHECK are themselves optional per app type (a CLI-shaped app
+has no listening port to poll) - see base_images.py's AppImagePolicy
+docstring. A CLI-shaped app type also asks the model for a RUN install
+instruction alongside COPY (needs_install_step), since which package
+manifests exist is genuine per-repo variance too.
+
 Does NOT use orchestrator.run_task() - that function's proposed_actions
 extraction is built for numbered diagnostic action lists ("1. ... 2. ..."),
 not a single multi-line file's content. Calls the runner directly (same
@@ -32,7 +40,8 @@ whatever github-mcp-server already needs it for).
 Usage:
     .venv/Scripts/python scripts/generate_dockerfile.py <approvals.jsonl> <owner/repo> <app-type>
 
-<app-type> must be a key in codegen.BASE_IMAGES (currently: static-site).
+<app-type> must be a key in codegen.BASE_IMAGES (currently: static-site,
+devops-agent-cli).
 """
 
 import sys
@@ -43,9 +52,10 @@ from pathlib import Path
 from approval import ApprovalStore
 from codegen import (
     BASE_IMAGES,
-    build_copy_instructions_prompt,
+    build_generation_prompt,
     check_dockerfile_policy,
     extract_copy_instructions,
+    extract_install_instructions,
     lint_dockerfile,
     render_dockerfile,
     resolve_app_image_policy,
@@ -71,8 +81,8 @@ def main() -> None:
         runner = SubprocessClaudeRunner(
             ClaudeRunConfig(
                 mcp_config_path=mcp_config_path,
-                system_prompt=build_copy_instructions_prompt(policy),
-                max_budget_usd=1.0,
+                system_prompt=build_generation_prompt(policy),
+                max_budget_usd=1.5 if policy.needs_install_step else 1.0,
                 allowed_tools=GITHUB_READ_TOOLS,
             )
         )
@@ -95,7 +105,20 @@ def main() -> None:
         print(run_result.result_text, file=sys.stderr)
         raise SystemExit(1)
 
-    dockerfile_content = render_dockerfile(policy, copy_instructions)
+    install_instructions = None
+    if policy.needs_install_step:
+        install_instructions = extract_install_instructions(run_result.result_text)
+        if install_instructions is None:
+            print(
+                "generation did not produce a properly labeled ```dockerfile-run block containing a RUN "
+                "instruction - refusing to propose anything",
+                file=sys.stderr,
+            )
+            print("--- full response ---", file=sys.stderr)
+            print(run_result.result_text, file=sys.stderr)
+            raise SystemExit(1)
+
+    dockerfile_content = render_dockerfile(policy, copy_instructions, install_instructions)
 
     print("--- assembled Dockerfile ---")
     print(dockerfile_content)
@@ -133,7 +156,11 @@ def main() -> None:
         {"action": f.action, "reason": f.reason} for f in check_proposed_actions(approval_request["proposed_actions"])
     ] + [
         {"action": "generated Dockerfile", "reason": f.reason}
-        for f in check_dockerfile_policy(dockerfile_content, allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()))
+        for f in check_dockerfile_policy(
+            dockerfile_content,
+            allowed_base_images=frozenset(p.image for p in BASE_IMAGES.values()),
+            expect_healthcheck=policy.healthcheck is not None,
+        )
     ]
     if all_findings:
         print("verifier warnings (persisted, review before deciding):")

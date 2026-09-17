@@ -1,5 +1,10 @@
 from codegen.base_images import AppImagePolicy
-from codegen.dockerfile import check_dockerfile_lint_output, extract_copy_instructions, render_dockerfile
+from codegen.dockerfile import (
+    check_dockerfile_lint_output,
+    extract_copy_instructions,
+    extract_install_instructions,
+    render_dockerfile,
+)
 
 # Captured verbatim from real `docker build --check` runs during development
 # (Docker 28.4.0) - see docs/ARCHITECTURE.md "services/codegen" for context.
@@ -111,11 +116,42 @@ def test_extract_copy_instructions_rejects_block_with_no_copy_line():
     assert extract_copy_instructions(text) is None
 
 
+def test_extract_install_instructions_pulls_labeled_fenced_block():
+    text = "```dockerfile-run\nRUN pip install --no-cache-dir -e ./services/orchestrator\n```\n"
+    assert extract_install_instructions(text) == "RUN pip install --no-cache-dir -e ./services/orchestrator"
+
+
+def test_extract_install_instructions_returns_none_when_no_labeled_block():
+    assert extract_install_instructions("no fenced block here") is None
+
+
+def test_extract_install_instructions_rejects_block_with_no_run_line():
+    text = "```dockerfile-run\n# nothing to install\n```"
+    assert extract_install_instructions(text) is None
+
+
+def test_extract_install_instructions_ignores_copy_block():
+    """The two-block prompt puts dockerfile-copy first, dockerfile-run
+    second - extraction must not cross-match the wrong fence label."""
+    text = "```dockerfile-copy\nCOPY --chown=app:app . /app\n```\n```dockerfile-run\nRUN pip install -e .\n```\n"
+    assert extract_install_instructions(text) == "RUN pip install -e ."
+
+
 POLICY = AppImagePolicy(
     image="nginxinc/nginx-unprivileged:1.27.4-alpine",
     cmd='["nginx", "-g", "daemon off;"]',
     healthcheck="--interval=30s --timeout=3s --start-period=5s --retries=3 \\\n    CMD wget -qO- http://127.0.0.1:8080/ || exit 1",
     port=8080,
+)
+
+CLI_POLICY = AppImagePolicy(
+    image="python:3.13.15-slim",
+    cmd='["python", "scripts/diagnose.py"]',
+    healthcheck=None,
+    port=None,
+    needs_install_step=True,
+    workdir="/app",
+    user="app",
 )
 
 
@@ -140,3 +176,55 @@ def test_render_dockerfile_is_deterministic():
 def test_render_dockerfile_strips_extraneous_whitespace_from_copy_instructions():
     content = render_dockerfile(POLICY, "\n  COPY . /usr/share/nginx/html  \n\n")
     assert "COPY . /usr/share/nginx/html\nEXPOSE" in content
+
+
+def test_render_dockerfile_omits_expose_and_healthcheck_when_policy_has_none():
+    content = render_dockerfile(CLI_POLICY, "COPY . /app", "RUN pip install -e .")
+    assert content == (
+        "FROM python:3.13.15-slim\n"
+        "WORKDIR /app\n"
+        "COPY . /app\n"
+        "RUN pip install -e .\n"
+        "RUN useradd --create-home app\n"
+        'USER app\n'
+        'CMD ["python", "scripts/diagnose.py"]\n'
+    )
+    assert "EXPOSE" not in content
+    assert "HEALTHCHECK" not in content
+
+
+def test_render_dockerfile_creates_user_after_install_and_before_cmd():
+    """The install step needs root (writing into the image's system Python);
+    switching to a non-root USER must happen after RUN install and before
+    CMD, never before - installing as the app user would fail with a
+    permission error against system site-packages."""
+    content = render_dockerfile(CLI_POLICY, "COPY . /app", "RUN pip install -e .")
+    assert content.index("RUN pip install") < content.index("RUN useradd")
+    assert content.index("RUN useradd") < content.index("USER app")
+    assert content.index("USER app") < content.index("CMD")
+
+
+def test_render_dockerfile_omits_user_creation_when_policy_has_none():
+    content = render_dockerfile(POLICY, "COPY . /usr/share/nginx/html")
+    assert "useradd" not in content
+    assert "USER" not in content
+
+
+def test_render_dockerfile_omits_workdir_when_policy_has_none():
+    content = render_dockerfile(POLICY, "COPY . /usr/share/nginx/html")
+    assert "WORKDIR" not in content
+
+
+def test_render_dockerfile_omits_install_run_line_when_not_given():
+    """The RUN that always appears for CLI_POLICY is user creation
+    (policy.user) - only the model-generated install RUN is conditional on
+    install_instructions being passed."""
+    content = render_dockerfile(CLI_POLICY, "COPY . /app")
+    assert "pip install" not in content
+    assert content.count("RUN ") == 1
+    assert "RUN useradd" in content
+
+
+def test_render_dockerfile_strips_extraneous_whitespace_from_install_instructions():
+    content = render_dockerfile(CLI_POLICY, "COPY . /app", "\n  RUN pip install -e .  \n\n")
+    assert "COPY . /app\nRUN pip install -e .\nRUN useradd" in content
