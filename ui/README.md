@@ -69,7 +69,7 @@ path and the container fails to start, that's Git Bash's MSYS path
 conversion, not Docker - prefix the command with `MSYS_NO_PATHCONV=1` (or
 run from PowerShell/cmd instead, which doesn't do this).
 
-### Known gap: Claude Code isn't authenticated in the container
+### Claude Code auth in the container: bind-mount the host session
 
 `claude` (the actual agent runtime every stage depends on) is installed
 in the image - a real bug, found live the same way as the buildx one:
@@ -80,28 +80,63 @@ throwaway Node build stage and copying out just the resulting binary
 (verified via `ldd` to be self-contained - no Node.js needed at runtime,
 only at install time) - see the Dockerfile's own comment.
 
-**Not fixed, and not decided here:** the binary has no credentials.
-`docs/ARCHITECTURE.md` documents a deliberate project-wide choice to use
-the operator's logged-in *subscription session*, not `ANTHROPIC_API_KEY`
-(`--bare` mode, which would force API-key auth, was explicitly rejected
-as "the wrong tradeoff"). A container has neither by default. Two real
-options, both with real consequences, neither picked silently:
+The binary alone has no credentials. `docs/ARCHITECTURE.md` documents a
+deliberate project-wide choice to use the operator's logged-in
+*subscription session*, not `ANTHROPIC_API_KEY` (`--bare` mode, which
+would force API-key auth, was explicitly rejected as "the wrong
+tradeoff"). **Decision (2026-09-18): bind-mount the operator's own
+session into the container**, rather than override that choice for the
+container specifically:
 
-1. Bind-mount the operator's own `~/.claude.json`/`~/.claude/` into the
-   container so it reuses the existing logged-in session - consistent
-   with the Docker-socket mount's existing local/trusted/single-operator
-   threat model, but it's a personal account credential, not a project
-   secret; think about that before doing it, the same way the Docker
-   socket mount's implications are spelled out above rather than assumed.
-2. Deliberately override the project's documented choice and use
-   `ANTHROPIC_API_KEY` for the containerized deployment specifically -
-   a real architecture decision, not a Dockerfile tweak, and it needs a
-   code path added (nothing today reads that variable).
+```
+docker run -d --name devops-agent-ui \
+  -p 127.0.0.1:8000:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "<path-to-your-home>/.claude.json:/root/.claude.json" \
+  -v "<path-to-your-home>/.claude:/root/.claude" \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> \
+  devops-agent-ui
+```
 
-Until one of these is chosen, a real generate/apply run through the
-container will fail for a different, better reason than before (an auth
-error, not a missing binary) - which is itself useful signal that the
-binary fix is real and complete.
+(On Windows via Git Bash, prefix with `MSYS_NO_PATHCONV=1` for the socket
+mount as above, but give the `.claude.json`/`.claude` sources as native
+Windows-style paths with forward slashes, e.g.
+`"C:/Users/<you>/.claude.json:/root/.claude.json"` - MSYS's path
+mangling is what you *want* to avoid for the socket, but these two really
+are real host filesystem paths and should resolve as such.)
+
+**Why this over the alternative:** consistent with the Docker-socket
+mount's already-established threat model (local, trusted,
+single-operator - see "Security" above) and avoids adding a second,
+divergent auth path this project didn't already have. **The real cost:**
+`~/.claude.json` is a personal account credential, not a project secret -
+mounting it gives the container everything your own `claude` CLI can do,
+under your account, for as long as the mount exists. That's a materially
+different thing to hand a container than a Docker socket (host-root vs.
+account access), even though both fit the same "local and trusted"
+framing - worth being deliberate about, not just consistent for
+consistency's sake.
+
+**Validated live end-to-end** (2026-09-18) with the session mounted:
+`claude auth status` inside the container correctly showed `loggedIn:
+true` under the real account; a full run through the container's own
+HTTP API (generate → lint → verify → approve → apply against
+`ematobi1/devops-agent`) completed with a real Claude Code call at each
+stage - `apply` correctly declined to open a no-op PR (the file already
+exists there identically from earlier in this project), the same correct
+refusal already documented elsewhere in `docs/ARCHITECTURE.md`, not a new
+bug. Two of the three `generate` attempts during this test produced an
+empty `RUN` block and were correctly refused rather than proposed - known
+LLM sampling variance (this project's history has recorded similar rates
+elsewhere), not a container-specific defect; confirmed by manually
+spawning the GitHub MCP server's sibling container from inside `ui`'s
+container and watching it start and connect cleanly over stdio.
+
+**Not pursued now, tracked for later:** using `ANTHROPIC_API_KEY` instead,
+for deployment shapes where mounting a personal session doesn't fit (a
+shared/remote deployment, CI, multiple operators) - filed as
+[issue #2](https://github.com/ematobi1/devops-agent/issues/2) rather than
+decided speculatively now.
 
 ## Deviations from the spec (read before assuming a UI field means what it looks like)
 

@@ -98,12 +98,20 @@ export GITHUB_PERSONAL_ACCESS_TOKEN=<your fine-grained PAT>
 ```
 
 Or in a container - see `ui/README.md` "Run it in a container" for why
-the Docker socket mount isn't optional:
+the Docker socket mount isn't optional, and "Claude Code auth in the
+container" for why the session mount is too (real generate/apply calls
+need Claude Code authenticated, and this project deliberately uses your
+subscription session, not an API key):
 
 ```
 docker build -f ui/Dockerfile -t devops-agent-ui .
-docker run --rm -p 8000:8000 -v /var/run/docker.sock:/var/run/docker.sock \
-  -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> devops-agent-ui
+docker run -d --name devops-agent-ui \
+  -p 127.0.0.1:8000:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "<path-to-your-home>/.claude.json:/root/.claude.json" \
+  -v "<path-to-your-home>/.claude:/root/.claude" \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> \
+  devops-agent-ui
 ```
 
 ## Manual scripts (cost real money, need secrets configured)
