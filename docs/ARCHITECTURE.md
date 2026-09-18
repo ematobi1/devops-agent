@@ -598,3 +598,47 @@ real. Do not pick an option and wire it up without the operator's
 explicit go-ahead; this is exactly the class of decision (personal
 credential exposure vs. a documented billing/architecture choice) that
 warrants asking, not guessing.
+
+## Decision: mount the host session, not an API key, for `ui`'s container (2026-09-18)
+
+Asked directly (per the note above), the operator chose option 1:
+bind-mount `~/.claude.json`/`~/.claude/` into the container rather than
+add an `ANTHROPIC_API_KEY` code path. Reasoning: consistency with the
+already-established Docker-socket mount's threat model (local, trusted,
+single-operator - see the "runs as root" decision above) and avoiding a
+second, divergent auth mechanism this project didn't already have.
+`ANTHROPIC_API_KEY` support for deployment shapes where a personal
+session mount doesn't fit (shared/remote, CI, multiple operators) is
+filed as [issue #2](https://github.com/ematobi1/devops-agent/issues/2),
+not built speculatively now - same discipline as the Kubernetes/Terraform
+scaffolding above: a real future need, tracked, not preemptively coded.
+
+**The real tradeoff, stated plainly, not just asserted:** a Docker socket
+mount grants host-root-equivalent access; a `~/.claude.json` mount grants
+account-equivalent access under the operator's own Claude subscription.
+Both fit "local, trusted, single operator," but they are not the same
+kind of exposure, and the decision above treats them as analogous for
+threat-model purposes - worth remembering if this container's deployment
+model ever changes (e.g., if it stops being something only the account
+owner runs on their own machine).
+
+**Validated live, exact command in `ui/README.md`:** `claude auth status`
+inside the container correctly reported the real logged-in account
+(`loggedIn: true`, correct email/org/subscription tier) once mounted.
+Full pipeline proof through the container's own HTTP API, not just the
+CLI: generate → lint → verify → approve → apply against
+`ematobi1/devops-agent`, real Claude Code calls at every stage. `apply`
+correctly declined to open a no-op PR (the file already exists there
+identically, from earlier work in this document) - the same
+already-documented refusal behavior, re-confirmed here, not a new
+finding. Two of three `generate` attempts during this test produced an
+empty `RUN` block and were correctly refused per the existing
+refuse-rather-than-guess contract (`extract_install_instructions()`
+returning `None`) - before trusting this as ordinary sampling variance
+rather than a container-specific regression, manually spawned the GitHub
+MCP server's sibling container from inside `ui`'s own container (`docker
+run -i --rm ... ghcr.io/github/github-mcp-server stdio ...` over the
+mounted socket) and confirmed it starts, connects, and speaks stdio
+correctly - the one plausible container-specific failure mode (a
+Docker-outside-of-Docker MCP server sibling misbehaving) was checked
+directly rather than assumed innocent.
