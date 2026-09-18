@@ -1,6 +1,31 @@
 "use strict";
 
-const STAGE_LABELS = { generate: "generate", lint: "lint", verify: "verify", approve: "approve", apply: "apply" };
+const STAGE_LABELS = { generate: "generate", lint: "lint", verify: "verify", diagnose: "diagnose", approve: "approve", apply: "apply" };
+
+// Which stages exist per mode, and which are locked on because they come
+// out of one script call and can't be independently requested (see
+// ui/pipeline.py's module docstring for why generate/lint/verify, and
+// diagnose/verify, are each one subprocess call apiece).
+const STAGE_GROUPS = {
+  dockerfile: [
+    { value: "generate", locked: true },
+    { value: "lint", locked: true },
+    { value: "verify", locked: true },
+    { value: "approve", locked: false },
+    { value: "apply", locked: false },
+  ],
+  diagnose: [
+    { value: "diagnose", locked: true },
+    { value: "verify", locked: true },
+    { value: "approve", locked: false },
+    { value: "apply", locked: false },
+  ],
+};
+
+const STAGE_HINTS = {
+  dockerfile: "generate/lint/verify always run together — they're one Claude Code run in the real script, not three separate ones. apply requires approve.",
+  diagnose: "diagnose/verify always run together — one Claude Code run in the real script. apply requires approve.",
+};
 
 let currentRunId = null;
 let currentStages = [];
@@ -9,12 +34,47 @@ let eventSource = null;
 const form = document.getElementById("run-form");
 const runBtn = document.getElementById("run-btn");
 const appTypeSelect = document.getElementById("app-type");
+const repoInput = document.getElementById("repo");
+const taskDescriptionInput = document.getElementById("task-description");
+const stageChecksEl = document.getElementById("stage-checks");
+const stageChecksHint = document.getElementById("stage-checks-hint");
 const progressPanel = document.getElementById("progress-panel");
 const stagesEl = document.getElementById("stages");
 const approvePanel = document.getElementById("approve-panel");
 const approveBtn = document.getElementById("approve-btn");
 const resultBanner = document.getElementById("result-banner");
 const retryBtn = document.getElementById("retry-btn");
+
+function currentMode() {
+  return document.querySelector('input[name="mode"]:checked').value;
+}
+
+function renderStageChecks(mode) {
+  stageChecksEl.innerHTML = STAGE_GROUPS[mode]
+    .map(
+      (s) =>
+        `<label><input type="checkbox" value="${s.value}" checked ${s.locked ? "disabled" : ""} /> ${STAGE_LABELS[s.value]}</label>`
+    )
+    .join("");
+  stageChecksHint.textContent = STAGE_HINTS[mode];
+}
+
+function applyModeToFields(mode) {
+  for (const el of document.querySelectorAll(".mode-fields")) {
+    el.hidden = el.dataset.mode !== mode;
+  }
+  repoInput.required = mode === "dockerfile";
+  appTypeSelect.required = mode === "dockerfile";
+  taskDescriptionInput.required = mode === "diagnose";
+}
+
+for (const radio of document.querySelectorAll('input[name="mode"]')) {
+  radio.addEventListener("change", () => {
+    const mode = currentMode();
+    applyModeToFields(mode);
+    renderStageChecks(mode);
+  });
+}
 
 async function loadAppTypes() {
   const res = await fetch("/api/app-types");
@@ -104,7 +164,7 @@ function applyEvent(ev) {
     stderrEl.hidden = true;
   }
 
-  if (ev.artifact && ev.stage === "generate") {
+  if (ev.artifact && (ev.stage === "generate" || ev.stage === "diagnose")) {
     artifactEl.innerHTML = `
       <div class="artifact-box">
         <button class="btn-secondary copy-btn" data-role="copy">Copy</button>
@@ -179,17 +239,21 @@ form.addEventListener("submit", async (e) => {
   approvePanel.hidden = true;
   retryBtn.hidden = true;
 
-  const repo = document.getElementById("repo").value.trim();
-  const appType = appTypeSelect.value;
+  const mode = currentMode();
   currentStages = requestedStages();
 
   progressPanel.hidden = false;
   renderStages(currentStages);
 
+  const payload =
+    mode === "dockerfile"
+      ? { mode, repo_path: repoInput.value.trim(), app_type: appTypeSelect.value, stages: currentStages }
+      : { mode, task_description: taskDescriptionInput.value.trim(), stages: currentStages };
+
   const res = await fetch("/api/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo_path: repo, app_type: appType, stages: currentStages }),
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
@@ -237,4 +301,6 @@ retryBtn.addEventListener("click", async () => {
   connectStream(currentRunId);
 });
 
+applyModeToFields(currentMode());
+renderStageChecks(currentMode());
 loadAppTypes();

@@ -1,8 +1,21 @@
-"""FastAPI app driving the existing Dockerfile codegen pipeline
-(scripts/generate_dockerfile.py -> scripts/decide.py -> scripts/apply.py)
-through a local, single-page web UI. See ui/README.md "Deviations from
-the spec" for the handful of places this had to adapt to the pipeline's
-real shape rather than an assumed one.
+"""FastAPI app driving the existing pipeline scripts through a local,
+single-page web UI. Two independent modes, both ending in the same
+shared approve/apply flow:
+
+- "dockerfile": scripts/generate_dockerfile.py -> decide.py -> apply.py
+  (the original scope of this UI).
+- "diagnose": scripts/diagnose.py -> decide.py -> apply.py - the general,
+  natural-language DevOps request path. Added 2026-09-18 because it was
+  already a real, working, validated capability of this project that the
+  UI simply never exposed - not new functionality, a new front door onto
+  existing functionality. See ui/README.md "Diagnose mode".
+
+decide.py and apply.py are shared, unchanged, by both modes - apply.py in
+particular has no idea which script produced the ApprovalRequest it's
+executing (see docs/ARCHITECTURE.md "Apply step — scope").
+
+See ui/README.md "Deviations from the spec" for the handful of places
+this had to adapt to the pipeline's real shape rather than an assumed one.
 
 Local tool only: binds to 127.0.0.1, no auth, in-memory state (no
 database), one process. Never restart-safe across a server restart - a
@@ -15,11 +28,12 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from . import pipeline
 
@@ -33,17 +47,33 @@ app = FastAPI(title="devops-agent codegen UI")
 # entire persistence layer, and it does not survive a server restart.
 RUNS: dict[str, dict] = {}
 
-STAGE_ORDER = ["generate", "lint", "verify", "approve", "apply"]
-# generate/lint/verify all come out of ONE call to scripts/generate_dockerfile.py
-# (see pipeline.py's module docstring) - they cannot be independently
-# requested. Any of the three in `stages` runs all three.
-GENERATE_GROUP = {"generate", "lint", "verify"}
+# generate/lint/verify all come out of ONE call to scripts/generate_dockerfile.py;
+# diagnose/verify all come out of ONE call to scripts/diagnose.py (see
+# pipeline.py's module docstring) - within a mode, none of these stages
+# can be independently requested. Any one of a mode's group in `stages`
+# runs the whole group.
+FIRST_PHASE_GROUP = {
+    "dockerfile": {"generate", "lint", "verify"},
+    "diagnose": {"diagnose", "verify"},
+}
 
 
 class RunRequest(BaseModel):
-    repo_path: str  # actually a GitHub `owner/repo` identifier - see ui/README.md "Deviations from the spec"
-    app_type: str
-    stages: list[str] = ["generate", "lint", "verify", "approve", "apply"]
+    mode: Literal["dockerfile", "diagnose"] = "dockerfile"
+    repo_path: str | None = None  # dockerfile mode: a GitHub `owner/repo` identifier - see ui/README.md "Deviations from the spec"
+    app_type: str | None = None  # dockerfile mode only
+    task_description: str | None = None  # diagnose mode only: free-text natural-language request
+    stages: list[str] | None = None  # defaults per-mode below if omitted
+
+    @model_validator(mode="after")
+    def _default_stages(self) -> "RunRequest":
+        if self.stages is None:
+            self.stages = (
+                ["generate", "lint", "verify", "approve", "apply"]
+                if self.mode == "dockerfile"
+                else ["diagnose", "verify", "approve", "apply"]
+            )
+        return self
 
 
 class ApproveRequest(BaseModel):
@@ -55,8 +85,10 @@ def _new_run_record(run_id: str, req: RunRequest) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     return {
         "run_id": run_id,
+        "mode": req.mode,
         "repo_path": req.repo_path,
         "app_type": req.app_type,
+        "task_description": req.task_description,
         "stages_requested": list(req.stages),
         "approvals_path": run_dir / "approvals.jsonl",
         "changes_path": run_dir / "changes.jsonl",
@@ -109,53 +141,83 @@ def app_types() -> dict:
 
 @app.post("/api/run")
 async def start_run(req: RunRequest) -> dict:
-    try:
-        pipeline.validate_target_repo(req.repo_path)
-    except pipeline.RepoTargetError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if req.mode == "dockerfile":
+        if not req.repo_path or not req.app_type:
+            raise HTTPException(status_code=400, detail="dockerfile mode requires repo_path and app_type")
+        try:
+            pipeline.validate_target_repo(req.repo_path)
+        except pipeline.RepoTargetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    from codegen import BASE_IMAGES
+        from codegen import BASE_IMAGES
 
-    if req.app_type not in BASE_IMAGES:
-        raise HTTPException(status_code=400, detail=f"unknown app_type {req.app_type!r}; configured: {sorted(BASE_IMAGES)}")
+        if req.app_type not in BASE_IMAGES:
+            raise HTTPException(status_code=400, detail=f"unknown app_type {req.app_type!r}; configured: {sorted(BASE_IMAGES)}")
+    else:
+        if not req.task_description or not req.task_description.strip():
+            raise HTTPException(status_code=400, detail="diagnose mode requires a non-empty task_description")
 
     run_id = str(uuid.uuid4())
     run = _new_run_record(run_id, req)
     RUNS[run_id] = run
-    asyncio.create_task(_execute_generate_phase(run_id))
+    asyncio.create_task(_execute_first_phase(run_id))
     return {"run_id": run_id}
 
 
-async def _execute_generate_phase(run_id: str) -> None:
-    """Runs generate/lint/verify (if requested at all) in a background
-    task, then stops - approve/apply only ever run in response to an
-    explicit POST to /api/runs/{run_id}/approve, never automatically."""
+async def _execute_first_phase(run_id: str) -> None:
+    """Runs the mode's first-phase stage group (dockerfile:
+    generate/lint/verify, diagnose: diagnose/verify) if requested at all,
+    in a background task, then stops - approve/apply only ever run in
+    response to an explicit POST to /api/runs/{run_id}/approve, never
+    automatically."""
     run = RUNS[run_id]
+    mode = run["mode"]
     try:
-        if GENERATE_GROUP & set(run["stages_requested"]):
-            for s in ("generate", "lint", "verify"):
-                _emit(run, {"stage": s, "status": "running", "stdout": "", "stderr": "", "artifact": None})
-            outcome = await asyncio.to_thread(
-                pipeline.run_generate,
-                approvals_path=run["approvals_path"],
-                target_repo=run["repo_path"],
-                app_type=run["app_type"],
-            )
-            _emit_stage(run, outcome.generate)
-            _emit_stage(run, outcome.lint)
-            _emit_stage(run, outcome.verify)
-            run["results"]["generate"] = outcome.generate.to_dict()
-            run["results"]["lint"] = outcome.lint.to_dict()
-            run["results"]["verify"] = outcome.verify.to_dict()
-            run["approval_id"] = outcome.approval_id
-            run["cost_usd"] = outcome.cost_usd
+        if FIRST_PHASE_GROUP[mode] & set(run["stages_requested"]):
+            if mode == "dockerfile":
+                for s in ("generate", "lint", "verify"):
+                    _emit(run, {"stage": s, "status": "running", "stdout": "", "stderr": "", "artifact": None})
+                outcome = await asyncio.to_thread(
+                    pipeline.run_generate,
+                    approvals_path=run["approvals_path"],
+                    target_repo=run["repo_path"],
+                    app_type=run["app_type"],
+                )
+                _emit_stage(run, outcome.generate)
+                _emit_stage(run, outcome.lint)
+                _emit_stage(run, outcome.verify)
+                run["results"]["generate"] = outcome.generate.to_dict()
+                run["results"]["lint"] = outcome.lint.to_dict()
+                run["results"]["verify"] = outcome.verify.to_dict()
+                run["approval_id"] = outcome.approval_id
+                run["cost_usd"] = outcome.cost_usd
 
-            if not (outcome.generate.ok and outcome.lint.ok):
-                failed = "generate" if not outcome.generate.ok else "lint"
-                run["status"] = "failed"
-                run["failed_stage"] = failed
-                _finish(run, ok=False)
-                return
+                if not (outcome.generate.ok and outcome.lint.ok):
+                    failed = "generate" if not outcome.generate.ok else "lint"
+                    run["status"] = "failed"
+                    run["failed_stage"] = failed
+                    _finish(run, ok=False)
+                    return
+            else:
+                for s in ("diagnose", "verify"):
+                    _emit(run, {"stage": s, "status": "running", "stdout": "", "stderr": "", "artifact": None})
+                outcome = await asyncio.to_thread(
+                    pipeline.run_diagnose,
+                    approvals_path=run["approvals_path"],
+                    task_description=run["task_description"],
+                )
+                _emit_stage(run, outcome.diagnose)
+                _emit_stage(run, outcome.verify)
+                run["results"]["diagnose"] = outcome.diagnose.to_dict()
+                run["results"]["verify"] = outcome.verify.to_dict()
+                run["approval_id"] = outcome.approval_id
+                run["cost_usd"] = outcome.cost_usd
+
+                if not outcome.diagnose.ok:
+                    run["status"] = "failed"
+                    run["failed_stage"] = "diagnose"
+                    _finish(run, ok=False)
+                    return
 
         needs_approval = "approve" in run["stages_requested"] or "apply" in run["stages_requested"]
         if not needs_approval:
@@ -166,7 +228,8 @@ async def _execute_generate_phase(run_id: str) -> None:
         if run["approval_id"] is None:
             run["status"] = "failed"
             run["failed_stage"] = "approve"
-            _emit(run, {"stage": "approve", "status": "failed", "stdout": "", "stderr": "no approval id - generate must succeed first", "artifact": None})
+            first_stage = "generate" if mode == "dockerfile" else "diagnose"
+            _emit(run, {"stage": "approve", "status": "failed", "stdout": "", "stderr": f"no approval id - {first_stage} must succeed first", "artifact": None})
             _finish(run, ok=False)
             return
 
@@ -174,7 +237,7 @@ async def _execute_generate_phase(run_id: str) -> None:
         _emit(run, {"stage": "approve", "status": "awaiting_approval", "stdout": "waiting for the Approve button", "stderr": "", "artifact": None})
     except Exception as exc:  # noqa: BLE001 - background task: never let an exception crash the server, always surface as a failed event
         run["status"] = "failed"
-        run["failed_stage"] = run["failed_stage"] or "generate"
+        run["failed_stage"] = run["failed_stage"] or ("generate" if mode == "dockerfile" else "diagnose")
         _emit(run, {"stage": run["failed_stage"], "status": "failed", "stdout": "", "stderr": pipeline.redact_secrets(str(exc)), "artifact": None})
         _finish(run, ok=False)
 
@@ -241,9 +304,9 @@ async def retry_run(run_id: str) -> dict:
         raise HTTPException(status_code=409, detail=f"run is {run['status']!r}, not failed")
     failed_stage = run["failed_stage"]
     run["failed_stage"] = None
-    if failed_stage in GENERATE_GROUP or failed_stage is None:
+    if failed_stage in FIRST_PHASE_GROUP[run["mode"]] or failed_stage is None:
         run["status"] = "running"
-        asyncio.create_task(_execute_generate_phase(run_id))
+        asyncio.create_task(_execute_first_phase(run_id))
     elif failed_stage == "approve":
         run["status"] = "awaiting_approval"
     elif failed_stage == "apply":
@@ -279,8 +342,10 @@ def get_run(run_id: str) -> dict:
         raise HTTPException(status_code=404, detail="unknown run_id")
     return {
         "run_id": run["run_id"],
+        "mode": run["mode"],
         "repo_path": run["repo_path"],
         "app_type": run["app_type"],
+        "task_description": run["task_description"],
         "stages_requested": run["stages_requested"],
         "status": run["status"],
         "failed_stage": run["failed_stage"],

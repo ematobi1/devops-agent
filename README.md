@@ -85,11 +85,15 @@ export AWS_REGION=...
 ## Web UI (optional)
 
 `ui/` is a thin local FastAPI/vanilla-JS front end over the same pipeline
-scripts below - generate/lint/verify, an explicit browser Approve step,
-apply, live via SSE. It invokes the real scripts as subprocesses; it does
-not reimplement any pipeline logic. See `ui/README.md`, including its
-"Deviations from the spec" section on where the original build prompt's
-assumptions didn't match this pipeline's actual shape.
+scripts below, in two modes sharing one approve/apply flow: **Dockerfile**
+(generate/lint/verify, narrow) and **Diagnose** (a general natural-language
+DevOps request against GitHub, read-only - added 2026-09-18 to expose a
+capability this project already had since Phase 1 but the UI never
+surfaced). Explicit browser Approve step either way, apply live via SSE.
+It invokes the real scripts as subprocesses; it does not reimplement any
+pipeline logic. See `ui/README.md`, including its "Deviations from the
+spec" section on where the original build prompt's assumptions didn't
+match this pipeline's actual shape.
 
 ```
 .venv/Scripts/python -m pip install -r ui/requirements.txt   # once

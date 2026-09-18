@@ -3,50 +3,61 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dockerfile Codegen</title>
+  <title>DevOps Agent</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main>
     <header>
-      <h1>Dockerfile Codegen</h1>
+      <h1>DevOps Agent</h1>
       <p class="subtitle">
-        A thin UI over the existing pipeline: <code>scripts/generate_dockerfile.py</code> &rarr;
-        <code>scripts/decide.py</code> &rarr; <code>scripts/apply.py</code>. Nothing here recomputes
-        what those scripts already do.
+        A thin UI over the existing pipeline scripts. Nothing here recomputes what those scripts
+        already do &mdash; see <code>ui/README.md</code>.
       </p>
     </header>
 
     <section class="panel">
       <form id="run-form">
         <div class="field">
+          <label>Mode</label>
+          <div class="mode-toggle">
+            <label><input type="radio" name="mode" value="dockerfile" checked /> Generate a Dockerfile</label>
+            <label><input type="radio" name="mode" value="diagnose" /> Diagnose a task</label>
+          </div>
+          <small>
+            <strong>Dockerfile</strong>: <code>scripts/generate_dockerfile.py</code> &mdash; narrow, one
+            app type at a time. <strong>Diagnose</strong>: <code>scripts/diagnose.py</code> &mdash; a
+            general natural-language DevOps request against GitHub (read-only). Both end in the same
+            approve/apply flow below.
+          </small>
+        </div>
+
+        <div class="field mode-fields" data-mode="dockerfile">
           <label for="repo">Target GitHub repo (owner/repo)</label>
-          <input type="text" id="repo" name="repo" placeholder="ematobi1/devops-agent" required />
+          <input type="text" id="repo" name="repo" placeholder="ematobi1/devops-agent" />
           <small>
             This is a remote GitHub API target, not a local filesystem path &mdash; the pipeline
             investigates the repo over the GitHub MCP server, it never reads local files.
           </small>
+          <label for="app-type" style="margin-top: 10px;">App type</label>
+          <select id="app-type" name="app-type"></select>
+          <small>Loaded live from <code>codegen.BASE_IMAGES</code> &mdash; never hardcoded.</small>
         </div>
 
-        <div class="field">
-          <label for="app-type">App type</label>
-          <select id="app-type" name="app-type" required></select>
-          <small>Loaded live from <code>codegen.BASE_IMAGES</code> &mdash; never hardcoded.</small>
+        <div class="field mode-fields" data-mode="diagnose" hidden>
+          <label for="task-description">Task description</label>
+          <textarea id="task-description" name="task-description" rows="3"
+            placeholder="e.g. the checkout service is throwing 500s, find out why and propose a fix"></textarea>
+          <small>
+            Read-only investigation against GitHub. The result is a summary and a numbered list of
+            proposed actions &mdash; nothing is applied until you approve.
+          </small>
         </div>
 
         <div class="field">
           <label>Stages</label>
-          <div class="stage-checks" id="stage-checks">
-            <label><input type="checkbox" value="generate" checked disabled /> generate</label>
-            <label><input type="checkbox" value="lint" checked disabled /> lint</label>
-            <label><input type="checkbox" value="verify" checked disabled /> verify</label>
-            <label><input type="checkbox" value="approve" checked /> approve</label>
-            <label><input type="checkbox" value="apply" checked /> apply</label>
-          </div>
-          <small>
-            generate/lint/verify always run together &mdash; they're one Claude Code run in the
-            real script, not three separate ones (see the README). apply requires approve.
-          </small>
+          <div class="stage-checks" id="stage-checks"></div>
+          <small id="stage-checks-hint"></small>
         </div>
 
         <button type="submit" class="btn-primary" id="run-btn">Run</button>
@@ -57,7 +68,7 @@
       <div id="stages"></div>
 
       <div class="panel" id="approve-panel" hidden style="margin-top: 14px;">
-        <p><strong>Generated Dockerfile is ready for review.</strong> Nothing is applied until you approve.</p>
+        <p><strong>Proposal ready for review.</strong> Nothing is applied until you approve.</p>
         <button class="btn-approve" id="approve-btn">Approve &amp; continue</button>
       </div>
 

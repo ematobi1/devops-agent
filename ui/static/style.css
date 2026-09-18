@@ -61,7 +61,8 @@ label {
 }
 
 input[type="text"],
-select {
+select,
+textarea {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -69,10 +70,26 @@ select {
   font-size: 0.95rem;
   background: var(--panel);
   color: var(--text);
+  font-family: inherit;
+  resize: vertical;
 }
 
 .field {
   margin-bottom: 14px;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.mode-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  font-size: 0.9rem;
 }
 
 .field small {
