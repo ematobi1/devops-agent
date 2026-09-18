@@ -543,3 +543,58 @@ A `.dockerignore` was added at the repo root alongside this (excludes
 `.venv/`, `.git/`, caches, `ui/.runs/`) - it also improves the existing
 root `Dockerfile` (from the devops-agent-cli happy-path validation above),
 which had been building without one.
+
+## A fifth real bug: the container had no Claude Code at all, and a real decision left open (2026-09-17)
+
+Running an actual pipeline through the containerized UI (`ematobi1/devops-agent`,
+`devops-agent-cli`, exactly the same call already proven from the host)
+failed immediately with `FileNotFoundError: [Errno 2] No such file or
+directory: 'claude'`. `claude_runner.py` shells out to a bare `claude` on
+`PATH` - the previous version of `ui/Dockerfile` never installed it,
+because every earlier check (build, health, app-types, `lint_dockerfile()`
+via the socket) happened to exercise everything *except* the one thing
+this whole pipeline actually is: a Claude Code run.
+
+**Fixed the same way as the buildx gap** - by finding the real, correct
+install path empirically rather than guessing: `@anthropic-ai/claude-code`
+installs a native, self-contained executable (confirmed via `ldd` before
+trusting it - only glibc/librt/libpthread, no Node.js needed at runtime)
+via npm as a distribution channel, not because it's a Node.js program.
+`ui/Dockerfile` now has a throwaway `node:22.23.2-slim` build stage that
+runs the npm install, and copies out just the one resulting binary
+(`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`
+→ `/usr/local/bin/claude`) into the final image - no Node.js in the
+image that actually ships. Verified live: `claude --version` runs inside
+the real built image with no cost (no API call); a real generate/apply
+run was deliberately *not* retried through the container after this fix,
+since the next blocker (below) is real and money would be spent hitting
+it again for no new information.
+
+**Left open, deliberately, not decided here:** the installed binary has
+no credentials. This project already made an explicit choice about this
+at the orchestrator level - see the `--setting-sources project,local` /
+`--bare` note near the top of this document: `--bare` was rejected
+specifically because it forces `ANTHROPIC_API_KEY` auth instead of the
+operator's normal logged-in *subscription session*. A fresh container has
+neither. The operator was asked directly rather than this being decided
+silently in a Dockerfile; both real options carry real consequences:
+
+1. Bind-mount the operator's own `~/.claude.json`/`~/.claude/` into the
+   container so it reuses their existing logged-in session - same
+   local/trusted/single-operator threat model already established for
+   the Docker socket mount, but a personal account credential is a
+   materially different thing to expose than a local Docker socket.
+2. Deliberately override the documented subscription-session choice and
+   wire up `ANTHROPIC_API_KEY` for the *containerized* deployment
+   specifically - a real architecture decision (billing against an API
+   key instead of the subscription; losing whatever `--setting-sources`
+   was preserving that `--bare` would have dropped too), not a Dockerfile
+   detail, and nothing in this codebase reads that variable today.
+
+Until one is chosen, a real generate/apply run through the container
+fails on a different, more informative error than before (an auth
+failure, not a missing binary) - itself confirmation the binary fix is
+real. Do not pick an option and wire it up without the operator's
+explicit go-ahead; this is exactly the class of decision (personal
+credential exposure vs. a documented billing/architecture choice) that
+warrants asking, not guessing.

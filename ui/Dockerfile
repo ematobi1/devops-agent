@@ -22,12 +22,41 @@
 # hold across Docker Desktop's Windows/Mac proxy vs. native Linux) for no
 # actual security benefit - see ui/README.md "Security" for the existing
 # no-auth, localhost-only threat model this fits into.
+#
+# NOT SOLVED YET: Claude Code auth. The `claude` binary below runs, but a
+# real generate/apply call will still fail - this project deliberately
+# uses the operator's logged-in subscription session, not ANTHROPIC_API_KEY
+# (see docs/ARCHITECTURE.md's `--setting-sources`/`--bare` note: forcing
+# API-key auth was already considered and rejected as "the wrong tradeoff"
+# at the orchestrator level, for reasons unrelated to containers). Getting
+# a real session into this container means bind-mounting the operator's
+# own ~/.claude.json/~/.claude/ (a real personal-account-credential
+# exposure decision, not a Dockerfile detail) or deliberately overriding
+# that decision for the container specifically - both left to the operator
+# to decide, not decided here. See docs/ARCHITECTURE.md's note on this
+# image for the two options and why neither was picked silently.
 
 FROM docker:29.8.1-cli AS docker-cli
 FROM docker/buildx-bin:0.37.1 AS buildx-bin
+FROM node:22.23.2-slim AS claude-cli
+RUN npm install -g @anthropic-ai/claude-code
 
 FROM python:3.13.15-slim
 WORKDIR /app
+
+# The actual Claude Code agent runtime this entire pipeline depends on -
+# missing from every earlier build of this image (found live: a real
+# pipeline run through the container failed with a plain
+# FileNotFoundError: 'claude', since claude_runner.py shells out to a bare
+# `claude` on PATH and nothing had ever installed it here). The published
+# binary (verified: a self-contained native executable with only glibc/
+# librt/libpthread dependencies, no Node.js needed at runtime - checked
+# via `ldd` before trusting this) is distributed through npm's global
+# install as a convenient channel, not because it needs Node.js to run;
+# only the install stage above needs Node, and only that one file is
+# copied into the final image.
+COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude
+RUN chmod +x /usr/local/bin/claude
 
 # Just the `docker` CLI binary, not the daemon - copied from the official
 # CLI-only image rather than `apt-get install docker.io`, which pulls in

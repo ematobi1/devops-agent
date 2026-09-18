@@ -69,6 +69,40 @@ path and the container fails to start, that's Git Bash's MSYS path
 conversion, not Docker - prefix the command with `MSYS_NO_PATHCONV=1` (or
 run from PowerShell/cmd instead, which doesn't do this).
 
+### Known gap: Claude Code isn't authenticated in the container
+
+`claude` (the actual agent runtime every stage depends on) is installed
+in the image - a real bug, found live the same way as the buildx one:
+the first real pipeline run through the container failed with a plain
+`FileNotFoundError: 'claude'`, because nothing had ever put the binary
+there. Fixed by installing `@anthropic-ai/claude-code` via npm in a
+throwaway Node build stage and copying out just the resulting binary
+(verified via `ldd` to be self-contained - no Node.js needed at runtime,
+only at install time) - see the Dockerfile's own comment.
+
+**Not fixed, and not decided here:** the binary has no credentials.
+`docs/ARCHITECTURE.md` documents a deliberate project-wide choice to use
+the operator's logged-in *subscription session*, not `ANTHROPIC_API_KEY`
+(`--bare` mode, which would force API-key auth, was explicitly rejected
+as "the wrong tradeoff"). A container has neither by default. Two real
+options, both with real consequences, neither picked silently:
+
+1. Bind-mount the operator's own `~/.claude.json`/`~/.claude/` into the
+   container so it reuses the existing logged-in session - consistent
+   with the Docker-socket mount's existing local/trusted/single-operator
+   threat model, but it's a personal account credential, not a project
+   secret; think about that before doing it, the same way the Docker
+   socket mount's implications are spelled out above rather than assumed.
+2. Deliberately override the project's documented choice and use
+   `ANTHROPIC_API_KEY` for the containerized deployment specifically -
+   a real architecture decision, not a Dockerfile tweak, and it needs a
+   code path added (nothing today reads that variable).
+
+Until one of these is chosen, a real generate/apply run through the
+container will fail for a different, better reason than before (an auth
+error, not a missing binary) - which is itself useful signal that the
+binary fix is real and complete.
+
 ## Deviations from the spec (read before assuming a UI field means what it looks like)
 
 The build prompt for this UI assumed a shape for the underlying pipeline
