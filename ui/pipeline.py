@@ -1,5 +1,6 @@
 """Thin subprocess wrappers around the existing pipeline scripts
-(scripts/generate_dockerfile.py, scripts/decide.py, scripts/apply.py).
+(scripts/generate_dockerfile.py, scripts/diagnose.py, scripts/decide.py,
+scripts/apply.py).
 
 No pipeline logic lives here - every function's job is to build the exact
 argv the corresponding script already documents in its own module
@@ -7,15 +8,30 @@ docstring, run it, and parse its already-deterministic stdout into a
 structured result. Nothing here recomputes a lint/policy decision the
 scripts themselves already made.
 
-generate_dockerfile.py performs THREE things - generate, lint (`docker
-build --check`), and policy verification - in one Claude Code run and one
-process, because lint/policy findings depend on the just-generated
-content and there's no reason to pay for a second run to re-derive them.
-This module makes one subprocess call for all three and splits its stdout
-into three UI-facing stage results by parsing the script's own printed
-section markers (`--- assembled Dockerfile ---`, `--- linting via docker
-build --check ---`, `verifier warnings (persisted, review before
-deciding):`) - not by re-running or re-judging anything.
+Two independent ways to produce the ApprovalRequest that approve/apply
+then act on - both real, both already-shipped CLI scripts, neither new:
+
+- generate_dockerfile.py: narrow, Dockerfile-specific. Performs THREE
+  things - generate, lint (`docker build --check`), and policy
+  verification - in one Claude Code run and one process, because
+  lint/policy findings depend on the just-generated content and there's
+  no reason to pay for a second run to re-derive them. run_generate()
+  makes one subprocess call and splits its stdout into three UI-facing
+  stage results by parsing the script's own printed section markers
+  (`--- assembled Dockerfile ---`, `--- linting via docker build
+  --check ---`, `verifier warnings (persisted, review before
+  deciding):`) - not by re-running or re-judging anything.
+- diagnose.py: general - an arbitrary natural-language DevOps request
+  against GitHub, read-only, producing a summary and a numbered list of
+  proposed actions plus the same verifier check. run_diagnose() splits
+  its stdout into two UI-facing stage results (diagnose/verify) the same
+  way, by parsing its own printed markers (`summary:`, `proposed
+  actions:`, the same verifier-warnings marker).
+
+scripts/decide.py and scripts/apply.py are shared by both paths
+unchanged - apply.py in particular has no idea which script produced the
+ApprovalRequest it's executing, by design (see docs/ARCHITECTURE.md
+"Apply step — scope").
 """
 
 from __future__ import annotations
@@ -181,6 +197,67 @@ def run_generate(*, approvals_path: Path, target_repo: str, app_type: str, timeo
     return GenerateOutcome(
         generate=generate_result,
         lint=lint_result,
+        verify=verify_result,
+        approval_id=approval_id_match.group(1) if approval_id_match else None,
+        cost_usd=float(cost_match.group(1)) if cost_match else None,
+    )
+
+
+_DIAGNOSE_SUMMARY_RE = re.compile(r"^summary: (.*?)\nproposed actions:\n", re.DOTALL | re.MULTILINE)
+_DIAGNOSE_ACTIONS_RE = re.compile(
+    r"\nproposed actions:\n(.*?)(?=\n\nverifier warnings \(persisted|\n\napproval id:|\Z)", re.DOTALL
+)
+_DIAGNOSE_VERIFY_RE = re.compile(
+    r"verifier warnings \(persisted, review before deciding\):\n(.*?)(?=\n\napproval id:|\Z)", re.DOTALL
+)
+
+
+@dataclass
+class DiagnoseOutcome:
+    diagnose: StageResult
+    verify: StageResult
+    approval_id: str | None = None
+    cost_usd: float | None = None
+
+
+def run_diagnose(*, approvals_path: Path, task_description: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> DiagnoseOutcome:
+    """Runs scripts/diagnose.py once - the general, natural-language path
+    (as opposed to run_generate()'s narrow Dockerfile-specific one).
+    Splits its stdout into two UI-facing pseudo-stages (diagnose/verify)
+    by parsing the script's own printed markers. Forces
+    GITHUB_READ_ONLY_FLAG=--read-only=true - diagnose is always read-only,
+    same as generate; only apply ever runs write-scoped."""
+    env = dict(os.environ, GITHUB_READ_ONLY_FLAG="--read-only=true")
+    argv = [PYTHON, str(REPO_ROOT / "scripts" / "diagnose.py"), str(approvals_path), task_description]
+    exit_code, stdout, stderr = _run(argv, timeout=timeout, env=env)
+
+    summary_match = _DIAGNOSE_SUMMARY_RE.search(stdout)
+    actions_match = _DIAGNOSE_ACTIONS_RE.search(stdout)
+    approval_id_match = _APPROVAL_ID_RE.search(stdout)
+    cost_match = _COST_RE.search(stdout)
+
+    artifact_parts = []
+    if summary_match:
+        artifact_parts.append("Summary:\n" + summary_match.group(1).strip())
+    if actions_match:
+        artifact_parts.append("Proposed actions:\n" + actions_match.group(1).strip())
+    artifact = "\n\n".join(artifact_parts) if artifact_parts else None
+
+    diagnose_ok = approval_id_match is not None
+    diagnose_result = StageResult(
+        stage="diagnose", ok=diagnose_ok, stdout=stdout, stderr=stderr, exit_code=exit_code, artifact=artifact
+    )
+    if not diagnose_ok:
+        skipped_verify = StageResult(stage="verify", ok=False, stdout="", stderr="skipped - diagnose did not produce an approval", exit_code=exit_code)
+        return DiagnoseOutcome(diagnose=diagnose_result, verify=skipped_verify)
+
+    verify_match = _DIAGNOSE_VERIFY_RE.search(stdout)
+    verify_text = verify_match.group(1).strip() if verify_match else "no warnings."
+    # Same "annotate, never block" contract as run_generate()'s verify pseudo-stage.
+    verify_result = StageResult(stage="verify", ok=True, stdout=verify_text, exit_code=exit_code)
+
+    return DiagnoseOutcome(
+        diagnose=diagnose_result,
         verify=verify_result,
         approval_id=approval_id_match.group(1) if approval_id_match else None,
         cost_usd=float(cost_match.group(1)) if cost_match else None,

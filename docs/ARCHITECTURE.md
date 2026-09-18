@@ -642,3 +642,54 @@ mounted socket) and confirmed it starts, connects, and speaks stdio
 correctly - the one plausible container-specific failure mode (a
 Docker-outside-of-Docker MCP server sibling misbehaving) was checked
 directly rather than assumed innocent.
+
+## `ui/` gains a second mode: diagnose, not just Dockerfile codegen (2026-09-18)
+
+Prioritizing "next phase" work against this document's own stated
+outcome (a daily-usable agent for natural-language DevOps requests, not
+just Dockerfile generation) surfaced a real gap: `scripts/diagnose.py`
+&rarr; `decide.py` &rarr; `apply.py` - the general path, validated live
+back in Phase 1 ("GitHub end-to-end validation" above) - was never
+reachable from `ui/`, which only ever drove the narrow
+`generate_dockerfile.py` path. Not speculative work (unlike the
+Kubernetes/Terraform scaffolding or the API-key auth alternative, both
+correctly left alone above for lacking a real target) - `diagnose.py`
+already worked; the UI just never exposed it.
+
+**What changed:** `ui/pipeline.py` gained `run_diagnose()`, parsing
+`diagnose.py`'s stdout into two pseudo-stages (`diagnose`/`verify`) the
+same way `run_generate()` already did for the Dockerfile path - by
+regex over the script's own printed markers (`summary:`, `proposed
+actions:`, the shared verifier-warnings marker), not by re-deriving
+anything. `ui/app.py`'s `RunRequest` gained a `mode` field
+(`"dockerfile"` default, or `"diagnose"`) with mode-appropriate required
+fields, and the background-task dispatch and retry logic branch on a
+`FIRST_PHASE_GROUP` dict instead of a single hardcoded stage set.
+**`decide.py` and `apply.py` needed zero changes** - both were already
+integration-agnostic by design (see "Apply step — scope" above); this
+is the first time that design decision actually got exercised by a
+second real caller rather than just asserted.
+
+**Parser correctness mattered more here than for the Dockerfile path**:
+`diagnose.py` prints `summary: {full raw multi-line Claude reply}` -
+unlike `generate_dockerfile.py`'s single-line, single-purpose fields, this
+can span many lines and itself contain blank lines, making a naive
+single-line regex silently truncate to just the first line. Caught before
+shipping by testing the parser against realistic hand-built multi-line
+samples (`ui/test_pipeline.py`, added to `pytest.ini`'s `testpaths` so it
+actually runs in the gate suite - previously nothing under `ui/` did),
+not by trusting the first regex that compiled.
+
+**Validated live**, not just unit-tested: a real diagnose-mode run
+through the UI's own HTTP API asked it to check `pytest.ini`'s
+`testpaths` in `ematobi1/devops-agent`. It correctly investigated the
+*actual remote GitHub state* (accurately reporting the file as it stood
+before this session's own `ui` testpaths change was pushed - proof it
+reads the real repo, not local files or a cache) and correctly proposed
+no numbered action, since fixing it is a maintainer decision, not
+something executable verbatim - exactly what `SYSTEM_PROMPT` asks a
+diagnostic run to do in that situation. Cost $0.0962. The shared
+approve/apply continuation wasn't separately re-run here, since that
+code path is untouched and already extensively validated elsewhere in
+this document via the Dockerfile mode - re-proving unchanged code adds
+no information.

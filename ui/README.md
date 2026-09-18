@@ -1,11 +1,56 @@
-# Dockerfile codegen web UI
+# DevOps Agent web UI
 
-A thin local web UI over the existing pipeline
-(`scripts/generate_dockerfile.py` &rarr; `scripts/decide.py` &rarr;
-`scripts/apply.py`). It invokes those scripts exactly as documented in
-their own module docstrings and parses their already-deterministic stdout
-into stage results - it does not reimplement any generation, lint, or
+A thin local web UI over the existing pipeline scripts. Two modes,
+sharing the same approve/apply flow:
+
+- **Dockerfile**: `scripts/generate_dockerfile.py` &rarr; `scripts/decide.py`
+  &rarr; `scripts/apply.py` - narrow, one app type at a time.
+- **Diagnose** (added 2026-09-18): `scripts/diagnose.py` &rarr; `decide.py`
+  &rarr; `apply.py` - a general, natural-language DevOps request against
+  GitHub (read-only investigation, then the same human-gated apply). This
+  wasn't new functionality when it was added - `diagnose.py` had been a
+  real, working, live-validated part of this project since Phase 1 (see
+  `docs/ARCHITECTURE.md`'s "GitHub end-to-end validation"); the UI simply
+  never exposed it, only the Dockerfile-specific path.
+
+It invokes those scripts exactly as documented in their own module
+docstrings and parses their already-deterministic stdout into stage
+results - it does not reimplement any generation, diagnosis, lint, or
 policy logic. See `pipeline.py`'s module docstring for exactly how.
+`scripts/decide.py` and `scripts/apply.py` are shared, unchanged, by both
+modes - `apply.py` has no idea which script produced the
+`ApprovalRequest` it's executing, by design.
+
+## Diagnose mode
+
+Pick "Diagnose a task" in the UI, describe the request in plain language
+(e.g. "the checkout service is throwing 500s, find out why and propose a
+fix"), and it runs exactly like `scripts/diagnose.py` always has: a
+read-only Claude Code investigation against GitHub, producing a summary
+and (if there's something concretely executable) a numbered list of
+proposed actions. Same approve gate, same `apply.py` underneath - nothing
+about the human-gated safety model changes because the request came from
+free text instead of an `owner/repo` + app type.
+
+`pipeline.run_diagnose()` splits `diagnose.py`'s stdout into two
+UI-facing pseudo-stages (`diagnose`/`verify`) the same way
+`run_generate()` does for the Dockerfile path - one subprocess call, two
+stage rows, parsed from the script's own printed markers
+(`summary:`, `proposed actions:`, the same verifier-warnings marker used
+elsewhere). See `ui/test_pipeline.py` for the parser's own test coverage
+against realistic hand-built samples.
+
+**Validated live** (2026-09-18): a real diagnose-mode run through this
+UI's HTTP API, asking it to check a real file's contents in
+`ematobi1/devops-agent` - correctly investigated the *actual remote repo
+state* (not local files; it accurately reported `pytest.ini` as it stood
+on GitHub before this session's own `ui` testpaths change was pushed),
+correctly proposed no numbered action (the underlying fix needs a
+maintainer decision, not something executable verbatim - exactly what
+`SYSTEM_PROMPT` asks for), and completed cleanly. Cost $0.0962. The
+shared approve/apply continuation wasn't separately re-tested here since
+that code path is unchanged and already extensively validated elsewhere
+in this document via the Dockerfile mode.
 
 ## Run it
 
@@ -210,6 +255,7 @@ thing:
 ui/
   app.py            FastAPI app: routes, in-memory run state, SSE
   pipeline.py        subprocess wrappers + stdout parsing - no pipeline logic
+  test_pipeline.py   parser unit tests (no subprocess/Docker/network) - part of the gate suite (pytest.ini)
   static/
     index.html
     app.js
@@ -227,7 +273,7 @@ them).
 - `GET /` - the UI
 - `GET /api/health` - `{"status": "ok"}`
 - `GET /api/app-types` - live from `codegen.BASE_IMAGES`
-- `POST /api/run` - `{repo_path, app_type, stages}` &rarr; `{run_id}`; starts generate/lint/verify in a background task
+- `POST /api/run` - `{mode: "dockerfile"|"diagnose", repo_path, app_type, task_description, stages}` (only the fields the chosen mode needs) &rarr; `{run_id}`; starts the mode's first-phase stage group in a background task
 - `GET /api/stream/{run_id}` - SSE, one JSON event per stage transition, replays full history to a new/reconnecting subscriber, ends with `{"stage": "done", "status": "ok"|"failed", "pr_url": ...}`
 - `GET /api/runs/{run_id}` - full run record (for the SSE-drop polling fallback, or just inspecting a past run)
 - `POST /api/runs/{run_id}/approve` - `{decided_by}`; only valid while `status == "awaiting_approval"`; runs approve, then apply if requested
