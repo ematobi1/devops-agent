@@ -86,13 +86,22 @@ def test_diagnose_verify_absent_when_no_warnings_section():
     assert _DIAGNOSE_VERIFY_RE.search(DIAGNOSE_NO_WARNINGS) is None
 
 
-def test_redact_secrets_matches_github_and_aws_patterns():
-    text = "token=ghp_abcdefghijklmnopqrstuvwxyz123456 and github_pat_11ABCDEFabcdef01234567890abcdefghijklmnop and AKIAABCDEFGHIJKLMNOP and aws_secret_access_key=xyz"
-    redacted = redact_secrets(text)
-    assert "ghp_" not in redacted
-    assert "github_pat_" not in redacted
-    assert "AKIA" not in redacted
-    assert "aws_secret" not in redacted.lower() or "[REDACTED]" in redacted
+def test_redact_secrets_matches_every_supported_credential_format():
+    samples = {
+        "classic": "gh" + "p_" + "a1" * 18,
+        "oauth": "gh" + "o_" + "a1" * 18,
+        "fine-grained": "github_" + "pat_" + "11ABCDEFabcdef01234567890abcdefghijklmnop",
+        "aws-long-lived": "AK" + "IA" + "ABCDEFGHIJKLMNOP",
+        "aws-session": "AS" + "IA" + "ABCDEFGHIJKLMNOP",
+        "aws-secret": "aws_secret_access_key=" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "anthropic": "sk-" + "ant-" + "api03-" + "a1" * 15,
+        "slack": "xox" + "b-" + "1234567890-abcdefghij",
+        "private-key": "-----BEGIN " + "RSA PRIVATE KEY-----\nMIIEabc\n-----END RSA PRIVATE KEY-----",
+    }
+    for name, sample in samples.items():
+        redacted = redact_secrets(f"before {sample} after")
+        assert sample not in redacted, name
+        assert "[REDACTED]" in redacted, name
 
 
 def test_redact_secrets_handles_none_and_empty():

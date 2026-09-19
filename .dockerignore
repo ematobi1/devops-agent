@@ -7,3 +7,7 @@ __pycache__/
 ui/.runs/
 data/
 .env
+*.jsonl
+mcp-config-*.json
+.claude/
+.claude.json

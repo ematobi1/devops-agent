@@ -8,7 +8,7 @@
 # that has to reach a real Docker daemon. This container has no daemon of
 # its own (Docker-in-Docker is unnecessary complexity for a local dev tool);
 # it talks to the HOST's daemon instead (Docker-outside-of-Docker):
-#   docker run --rm -p 8000:8000 \
+#   docker run --rm -p 127.0.0.1:8000:8000 \
 #     -v /var/run/docker.sock:/var/run/docker.sock \
 #     -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> \
 #     devops-agent-ui
@@ -39,7 +39,7 @@
 FROM docker:29.8.1-cli AS docker-cli
 FROM docker/buildx-bin:0.37.1 AS buildx-bin
 FROM node:22.23.2-slim AS claude-cli
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@2.1.278
 
 FROM python:3.13.15-slim
 WORKDIR /app
@@ -77,6 +77,7 @@ RUN pip install --no-cache-dir \
     -e ./services/verifier \
     -e ./services/codegen \
     -e ./services/orchestrator \
+    -e ./services/security \
     -r ./ui/requirements.txt
 
 EXPOSE 8000

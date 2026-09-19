@@ -37,6 +37,14 @@ def main() -> None:
     store = ApprovalStore(approvals_path)
     pending = store.get(approval_id)
 
+    print(f"summary: {pending['summary']}")
+    print("proposed actions:")
+    for action in pending["proposed_actions"]:
+        print(f"  - {action['instruction']}")
+        for payload_line in (action.get("payload") or "").splitlines():
+            print(f"    | {payload_line}")
+    print()
+
     warnings = pending.get("verifier_warnings") or []
     if warnings:
         print("verifier warnings on this proposal:")

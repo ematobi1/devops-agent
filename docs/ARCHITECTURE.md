@@ -693,3 +693,25 @@ approve/apply continuation wasn't separately re-run here, since that
 code path is untouched and already extensively validated elsewhere in
 this document via the Dockerfile mode - re-proving unchanged code adds
 no information.
+
+
+## Security gate and runtime guards (2026-09-19)
+
+`services/security/` (see its README). Requested as: a scan before deployment, of every decision and every authentication protocol, plus a check of every input and output before anything starts.
+
+**First real scan: 4 critical, 21 high** (before removing three false positives of the scanner's own). The real ones, all fixed or waived with a reason:
+
+- `.mcp.json.template` claimed read-only via `GITHUB_READ_ONLY=1`, which v1.12.1 ignores (see "GitHub end-to-end validation"). Now `stdio --read-only=true`.
+- Unpinned processes that receive credentials: the GitHub MCP image (now `v1.12.1@sha256:0ba840c4...`), `awslabs.*@latest` (now `cloudwatch 0.2.1`, `aws-iac 1.0.26`), `npm install -g @anthropic-ai/claude-code` (now `2.1.278`).
+- The documented `docker run -p 8000:8000` published the unauthenticated, docker.sock-holding UI on every host interface. Now `127.0.0.1:8000:8000`.
+- The UI had no Host or Origin validation (DNS rebinding, CSRF). Added, with tests.
+- `redact_secrets` missed `gho_`/`ghs_`/`ghu_`, `ASIA`, Anthropic keys, Slack tokens, private keys and JSON token fields. Covered now, and `audit_redactor` fails if it drifts from the scanner's detector list.
+- `decide.py` showed the approver warnings but not the proposal. `apply.py` showed only a payload's length. Both now print the full content. Change records now carry `applied_by`.
+- `.dockerignore` lacked `*.jsonl`, `mcp-config-*.json`, `.claude*`.
+- CI had no `permissions:` block.
+
+**Accepted risks (waivers, need the operator's confirmation):** docker.sock and `~/.claude` mounts, root container, no UI authentication, approve-and-apply in one UI click, unverified `decided_by`. Each restates an earlier decision in this document. None is acceptable for a shared or remote deployment.
+
+**Found by the tests, not the scan:** the bind-address rule missed exec-form `"--host", "0.0.0.0"` (the real Dockerfile's own form) until a fixture reproduced it.
+
+**Not done:** real UI authentication (a design decision, not a patch); a live check that the pinned GitHub image and the new `.mcp.json.template` args work (Docker was not running); the `ui` image rebuilt with the new package.

@@ -30,10 +30,15 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
+from security_scan import guard_input
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import pipeline
 
@@ -42,6 +47,24 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 RUNS_SCRATCH_DIR = Path(__file__).resolve().parent / ".runs"
 
 app = FastAPI(title="devops-agent codegen UI")
+
+LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]", "testserver"]
+STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# DNS rebinding: a page on an attacker's domain that resolves to 127.0.0.1
+# still sends its own hostname in Host, which this rejects.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTNAMES)
+
+
+@app.middleware("http")
+async def reject_cross_origin_writes(request: Request, call_next):
+    """CSRF: browsers always send Origin on a cross-origin state-changing
+    request. Requests with no Origin (curl, scripts) are not browser-driven."""
+    origin = request.headers.get("origin")
+    if request.method in STATE_CHANGING_METHODS and origin is not None:
+        if (urlparse(origin).hostname or "") not in {h.strip("[]") for h in LOCAL_HOSTNAMES}:
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+    return await call_next(request)
 
 # run_id -> mutable run record (dict). No database, per spec - this is the
 # entire persistence layer, and it does not survive a server restart.
@@ -77,7 +100,7 @@ class RunRequest(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    decided_by: str = "web-ui"
+    decided_by: str = Field(default="web-ui", pattern=r"^[A-Za-z0-9._@-]{1,64}$")
 
 
 def _new_run_record(run_id: str, req: RunRequest) -> dict:
@@ -141,6 +164,9 @@ def app_types() -> dict:
 
 @app.post("/api/run")
 async def start_run(req: RunRequest) -> dict:
+    for label, value in (("task_description", req.task_description), ("repo_path", req.repo_path), ("app_type", req.app_type)):
+        if value and (guarded := guard_input(value, label)).blocked:
+            raise HTTPException(status_code=400, detail=f"{label} refused by security input check: {guarded.findings[0].rule}")
     if req.mode == "dockerfile":
         if not req.repo_path or not req.app_type:
             raise HTTPException(status_code=400, detail="dockerfile mode requires repo_path and app_type")

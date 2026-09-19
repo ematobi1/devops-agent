@@ -61,6 +61,7 @@ from codegen import (
     resolve_app_image_policy,
 )
 from orchestrator import GITHUB_READ_TOOLS, ClaudeRunConfig, EnvSecretsProvider, SubprocessClaudeRunner, render_mcp_config
+from security_scan import require_clean_input, require_preflight, screen_proposal
 from verifier import check_proposed_actions
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +81,10 @@ def main() -> None:
         print(f"configured app types: {sorted(BASE_IMAGES)}", file=sys.stderr)
         raise SystemExit(1)
     approvals_path, target_repo, app_type = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+    require_clean_input(target_repo, "target repo")
+    require_clean_input(app_type, "app type")
+    require_preflight(REPO_ROOT, stage="read")
 
     policy = resolve_app_image_policy(app_type)
     print(f"policy (operator-configured, app_type={app_type!r}): image={policy.image} port={policy.port}")
@@ -170,6 +175,7 @@ def main() -> None:
             expect_healthcheck=policy.healthcheck is not None,
         )
     ]
+    all_findings += screen_proposal(approval_request, "generate_dockerfile")
     if all_findings:
         print("verifier warnings (persisted, review before deciding):")
         for finding in all_findings:
