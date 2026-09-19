@@ -2,7 +2,7 @@
   "mcpServers": {
     "aws-cloudwatch": {
       "command": "uvx",
-      "args": ["awslabs.cloudwatch-mcp-server@latest"],
+      "args": ["awslabs.cloudwatch-mcp-server@0.2.1"],
       "env": {
         "AWS_PROFILE": "${AWS_PROFILE}",
         "AWS_REGION": "${AWS_REGION}",

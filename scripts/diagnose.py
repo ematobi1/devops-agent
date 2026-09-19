@@ -35,6 +35,7 @@ from pathlib import Path
 from approval import ApprovalStore
 from orchestrator import GITHUB_READ_TOOLS, ClaudeRunConfig, EnvSecretsProvider, SubprocessClaudeRunner, render_mcp_config, run_task
 from orchestrator.orchestrate import SYSTEM_PROMPT
+from security_scan import require_clean_input, require_preflight, screen_proposal
 from verifier import check_proposed_actions
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +53,9 @@ def main() -> None:
         print(f"usage: {sys.argv[0]} <approvals.jsonl> '<task description>'", file=sys.stderr)
         raise SystemExit(1)
     approvals_path, description = Path(sys.argv[1]), sys.argv[2]
+
+    require_clean_input(description, "task description")
+    require_preflight(REPO_ROOT, stage="read")
 
     mcp_config_path = render_mcp_config(REPO_ROOT / ".mcp.github-only.json.template", EnvSecretsProvider())
     try:
@@ -84,13 +88,16 @@ def main() -> None:
         if action.get("payload"):
             print(f"    (payload: {len(action['payload'])} chars)")
 
+    security_warnings = screen_proposal(outcome.approval_request, "diagnose")
     findings = check_proposed_actions(outcome.approval_request["proposed_actions"])
-    if findings:
+    if findings or security_warnings:
         print()
         print("verifier warnings (persisted, review before deciding):")
         for finding in findings:
             print(f"  - [{finding.reason}] {finding.action}")
-        outcome.approval_request["verifier_warnings"] = [{"action": f.action, "reason": f.reason} for f in findings]
+        for warning in security_warnings:
+            print(f"  - {warning['reason']} {warning['action']}")
+        outcome.approval_request["verifier_warnings"] = [{"action": f.action, "reason": f.reason} for f in findings] + security_warnings
 
     ApprovalStore(approvals_path).create(outcome.approval_request)
     print()

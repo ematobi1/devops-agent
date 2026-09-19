@@ -34,6 +34,7 @@ Usage:
     .venv/Scripts/python scripts/apply.py <approvals.jsonl> <approval-id> <changes.jsonl>
 """
 
+import getpass
 import sys
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from orchestrator import (
     render_mcp_config,
 )
 from orchestrator.apply import APPLY_SYSTEM_PROMPT
+from security_scan import require_preflight, scan_text, screen_proposal
 from verifier import find_pr_reference
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,6 +74,8 @@ def main() -> None:
     approvals_path, approval_id, changes_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 
     approval = ApprovalStore(approvals_path).get(approval_id)
+    require_preflight(REPO_ROOT, stage="write")
+    screen_proposal(approval, "approved content")
 
     print(f"About to APPLY approval {approval_id!r} (task {approval['task_id']!r}):")
     print(f"  summary: {approval['summary']}")
@@ -79,7 +83,9 @@ def main() -> None:
     for action in approval["proposed_actions"]:
         print(f"    - {action['instruction']}")
         if action.get("payload"):
-            print(f"      (payload: {len(action['payload'])} chars)")
+            print("      payload:")
+            for payload_line in action["payload"].splitlines():
+                print(f"        | {payload_line}")
     if input("Type 'apply' to proceed, anything else to abort: ").strip() != "apply":
         print("Aborted - nothing was executed.")
         raise SystemExit(1)
@@ -98,7 +104,10 @@ def main() -> None:
     finally:
         mcp_config_path.unlink(missing_ok=True)
 
-    change_record = outcome.change_record
+    change_record = dict(outcome.change_record, applied_by=getpass.getuser())
+    if scan_text(change_record.get("detail", ""), "apply result"):
+        print("WARNING: the apply result text contains a secret-shaped value; it is withheld from the audit log.")
+        change_record["detail"] = "[withheld: secret-shaped value in apply result]"
     if change_record["outcome"] == "applied" and find_pr_reference(outcome.run_result.result_text) is None:
         print(
             "WARNING: apply_approved() reported outcome=applied, but no PR URL appears anywhere in the "

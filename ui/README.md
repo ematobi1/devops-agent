@@ -86,7 +86,7 @@ Dockerfile proposing exactly that shows up again). Build context is the
 
 ```
 docker build -f ui/Dockerfile -t devops-agent-ui .
-docker run --rm -p 8000:8000 \
+docker run --rm -p 127.0.0.1:8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e GITHUB_PERSONAL_ACCESS_TOKEN=<your PAT> \
   devops-agent-ui
@@ -281,7 +281,7 @@ them).
 
 ## Security
 
-Binds to `127.0.0.1` only. No auth (local tool). Every piece of subprocess
+Binds to `127.0.0.1` only. No auth (local tool). Requests with a non-loopback `Host` are rejected (DNS rebinding), cross-origin state-changing requests are rejected (CSRF), free-text inputs pass `security_scan.guard_input`, and `decided_by` must match `[A-Za-z0-9._@-]{1,64}`. Every piece of subprocess
 stdout/stderr is passed through `pipeline.redact_secrets()` - which
 matches `ghp_...`, `github_pat_...`, `AKIA...`, and `aws_secret...` shaped
 strings and replaces them with `[REDACTED]` - before it's stored in a run

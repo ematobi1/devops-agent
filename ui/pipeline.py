@@ -49,10 +49,14 @@ PYTHON = sys.executable  # the interpreter running this server - must be REPO_RO
 DEFAULT_TIMEOUT_SECONDS = 300
 
 _SECRET_PATTERNS = [
-    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"AKIA[A-Z0-9]{12,}"),
-    re.compile(r"aws_secret\S*", re.IGNORECASE),
+    re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{12,}"),
+    re.compile(r"aws_?secret\S*", re.IGNORECASE),
+    re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r'(?i)"(?:access|refresh)_?token"\s*:\s*"[^"]{20,}"'),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"),
 ]
 
 
