@@ -1,0 +1,52 @@
+[
+  {
+    "rule": "SEC-history-aws-access-key-id",
+    "location_contains": "ui/test_pipeline.py@",
+    "reason": "Synthetic redactor fixture committed in 61b0827; not a real credential. History cannot be rewritten; the file no longer contains scannable literals."
+  },
+  {
+    "rule": "SEC-history-github-fine-grained-pat",
+    "location_contains": "ui/test_pipeline.py@",
+    "reason": "Synthetic redactor fixture committed in 61b0827; not a real credential. History cannot be rewritten; the file no longer contains scannable literals."
+  },
+  {
+    "rule": "AUTH-sensitive-mount-documented",
+    "reason": "Operator decisions 2026-09-17/18 (docs/ARCHITECTURE.md): the ui container mounts the host Docker socket and ~/.claude session. Valid only for a local, trusted, single-operator run. Revoke this waiver before any shared or remote deployment (issue #2)."
+  },
+  {
+    "rule": "AUTH-ui-no-authentication",
+    "reason": "ui/README.md 'Security': local tool bound to 127.0.0.1, protected by Host and Origin validation. Add real authentication and revoke this waiver before it is reachable from anywhere but the operator's own machine."
+  },
+  {
+    "rule": "AUTH-container-runs-as-root",
+    "reason": "Documented in ui/Dockerfile and docs/ARCHITECTURE.md: the Docker socket mount is already host-root equivalent, so an in-container non-root USER adds brittleness without a security benefit."
+  },
+  {
+    "rule": "AUTH-ui-approve-and-apply-collapsed",
+    "reason": "The UI Approve click is the human gate; ui/pipeline.py run_apply feeds apply.py's typed confirmation on the operator's behalf (documented in its docstring). Apply still needs a write-scoped token the diagnose/generate stages never receive."
+  },
+  {
+    "rule": "AUTH-ui-client-supplied-identity",
+    "reason": "No authentication exists to verify an identity against (see AUTH-ui-no-authentication). decided_by is format-validated but unverified."
+  },
+  {
+    "rule": "DEC-schema-invalid",
+    "location_contains": "approvals.jsonl#fad3d8c4",
+    "reason": "Pre-migration record with string-shaped proposed_actions (docs/ARCHITECTURE.md, 'First happy-path attempt'); already decided and applied history."
+  },
+  {
+    "rule": "DEC-sensitive-operation",
+    "location_contains": "approvals.jsonl#fad3d8c4",
+    "reason": "Keyword false positive: 'delete' appears in a suggested README status note ('safe to delete after MCP validation'), not an operation."
+  },
+  {
+    "rule": "DEC-unattributed-apply",
+    "location_contains": "changes.jsonl:",
+    "reason": "Records written before applied_by existed (added with the security gate). New applies record it; historical lines are append-only and cannot be edited."
+  },
+  {
+    "rule": "AUTH-container-binds-all-interfaces",
+    "location_contains": "ui/Dockerfile",
+    "reason": "Required for Docker port publishing to reach the app; the documented run commands publish only on 127.0.0.1 (AUTH-published-on-all-interfaces enforces that)."
+  }
+]
