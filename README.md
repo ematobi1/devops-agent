@@ -2,13 +2,61 @@
 
 [![CI](https://github.com/ematobi1/devops-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/ematobi1/devops-agent/actions/workflows/ci.yml)
 
-Design: `docs/ARCHITECTURE.md`. Read that first — it explains why this isn't
-built the way the original 8-phase plan described (no OpenAI/Langchain; local
-Claude Code is the agent runtime; GitHub/AWS integrations are official MCP
-servers, not custom adapters), and has the full validation history and every
-real bug/finding hit along the way.
+An AI agent that diagnoses and changes real infrastructure (GitHub and AWS
+CloudWatch) without ever acting on its own: every change is a proposal that is
+deterministically verified, approved by a human, applied with a separately
+scoped credential, checked after the fact, and recorded in an append-only audit
+log. A security gate in CI blocks the build on any unwaived high or critical
+finding.
 
-## Status (2026-09-17)
+## Highlights
+
+- **Human in the loop by design.** Diagnose → verify → approve → apply →
+  verify the diff. Approve and apply are separate, human-triggered steps;
+  nothing auto-applies.
+- **Least privilege.** Integrations are the official GitHub and AWS
+  CloudWatch MCP servers. Read stages can never see a write-capable server,
+  images are pinned by digest, and fine-grained PATs are required.
+- **Security gate in CI.** Secrets scan of every file and all git history,
+  an audit of every approval and change record, auth/config checks for the
+  UI, containers and CI, plus bandit and pip-audit.
+- **Runtime guards** on every input and output: pasted credentials,
+  prompt-injection shapes, hidden characters, and secret-shaped values in
+  proposals.
+- **Validated live**, not just mocked: a generated Dockerfile went through
+  lint → approve → apply into a real pull request
+  ([#1](https://github.com/ematobi1/devops-agent/pull/1)) and was then built
+  and run.
+- **298 deterministic tests**, no network, under two seconds, enforced by a
+  pre-commit hook and CI.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U[Operator<br/>CLI or web UI] -->|task| IG[Input guards]
+  IG --> O[Orchestrator<br/>agent run]
+  O -->|read-only MCP| GH[(GitHub)]
+  O -->|read-only MCP| CW[(AWS CloudWatch)]
+  O --> P[Proposal]
+  P --> V[Verifier + output screen<br/>deterministic, no LLM]
+  V --> L[(Append-only<br/>approval log)]
+  L -->|human approves| AP[Apply<br/>write-scoped run]
+  AP -->|pull request| GH
+  AP --> D[Post-apply<br/>diff verification]
+  D --> L
+```
+
+Full design, trade-offs, and the validation history (including every real bug
+found along the way) are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Tech stack
+
+Python 3.14 · FastAPI · Model Context Protocol (github-mcp-server,
+awslabs.cloudwatch-mcp-server) · Docker · GitHub Actions · JSON Schema
+contracts · bandit · pip-audit · pytest
+
+## Status
 
 - **Diagnostic loop:** working end to end against real GitHub and real AWS
   CloudWatch. `scripts/diagnose.py` runs `orchestrator.run_task()`, verifies
@@ -66,10 +114,11 @@ export AWS_REGION=...
 ## Tests
 
 ```
-.venv/Scripts/python -m pytest
+.venv/Scripts/python -m pytest     # Windows
+.venv/bin/python -m pytest         # macOS / Linux
 ```
 
-145 gate tests, all deterministic, no network, runs in well under a second.
+298 gate tests, all deterministic, no network, runs in about two seconds.
 `scripts/setup.sh` wires these into a pre-commit hook
 (`git config core.hooksPath scripts/hooks`); CI runs them on every push/PR.
 
