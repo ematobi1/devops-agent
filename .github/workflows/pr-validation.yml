@@ -27,5 +27,6 @@ jobs:
     uses: ematobi1/ematobi1/.github/workflows/ci-reusable.yml@v1
     with:
       strict: false
+      python-extra-packages: httpx2
       # skip-paths: |
       #   path/to/exclude
